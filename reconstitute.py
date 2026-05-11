@@ -20,30 +20,36 @@ PARTS_DIR = ROOT / "data_parts"
 TARGETS = ["rogaland_10m.tif", "canopy.bin"]
 
 
-def reconstitute(target: str) -> None:
-    out = ROOT / target
-    parts = sorted(PARTS_DIR.glob(f"{target}.part*"))
-    if not parts:
-        print(f"  {target}: no parts found in data_parts/, skipping")
-        return
-    expected = sum(p.stat().st_size for p in parts)
-    if out.exists() and out.stat().st_size == expected:
-        print(f"  {target}: already up to date ({expected/1e6:.1f} MB)")
-        return
-    print(f"  {target}: joining {len(parts)} parts -> {expected/1e6:.1f} MB")
-    with out.open("wb") as o:
-        for p in parts:
-            o.write(p.read_bytes())
-    if out.stat().st_size != expected:
-        sys.exit(f"ERROR: {target} size mismatch after join")
+def run() -> None:
+    """Reconstitute any missing/incomplete split files. Safe to call repeatedly."""
+    if not PARTS_DIR.is_dir():
+        sys.exit(f"data_parts/ not found at {PARTS_DIR}")
+    any_work = False
+    for t in TARGETS:
+        out = ROOT / t
+        parts = sorted(PARTS_DIR.glob(f"{t}.part*"))
+        if not parts:
+            print(f"  {t}: no parts found in data_parts/, skipping")
+            continue
+        expected = sum(p.stat().st_size for p in parts)
+        if out.exists() and out.stat().st_size == expected:
+            print(f"  {t}: OK ({expected/1e6:.1f} MB, already reconstituted)")
+            continue
+        any_work = True
+        print(f"  {t}: joining {len(parts)} parts -> {expected/1e6:.1f} MB ...", flush=True)
+        with out.open("wb") as o:
+            for p in parts:
+                o.write(p.read_bytes())
+        if out.stat().st_size != expected:
+            sys.exit(f"ERROR: {t} size mismatch after join")
+        print(f"  {t}: done")
+    if not any_work:
+        print("  (nothing to do, all data files already present)")
 
 
 def main() -> None:
-    if not PARTS_DIR.is_dir():
-        sys.exit(f"data_parts/ not found at {PARTS_DIR}")
     print("Reconstituting data files...")
-    for t in TARGETS:
-        reconstitute(t)
+    run()
     print("Done.")
 
 

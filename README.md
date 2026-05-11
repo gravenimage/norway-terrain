@@ -11,29 +11,41 @@ forest+water layers.
 
 You need:
 
-1. **Python 3.10+** with `pip` (only used once, to glue split files together).
+1. **[uv](https://docs.astral.sh/uv/)** (fast Python runner — handles Python and dependencies for you).
 2. **A modern web browser** (Chrome / Edge / Firefox / Safari).
-3. **A way to serve static files locally** — Python ships with one.
 
-Steps:
+Then:
 
 ```bash
 git clone https://github.com/gravenimage/norway-terrain.git
 cd norway-terrain
-python reconstitute.py            # reassembles the two big data files
-python -m http.server 8000        # serve this folder
+uv run serve.py
 ```
 
-Then open <http://localhost:8000/viewer.html> in your browser.
+That's it. The script will:
+1. Reconstitute the two big data files from `data_parts/` if needed (a few seconds, only happens the first time).
+2. Start a local web server on <http://localhost:8000/>.
+3. Open the viewer in your default browser automatically.
 
-If you only want the preview page (lower-res still images), open
-<http://localhost:8000/index.html> instead.
+Press **Ctrl+C** in the terminal to stop the server.
 
-> **Why the `reconstitute.py` step?**
+### Don't have `uv`?
+
+`uv` is a single-binary install — see <https://docs.astral.sh/uv/getting-started/installation/>.
+On Windows / macOS / Linux it's one shell command.
+
+If you really don't want `uv`, plain Python 3.10+ works too:
+
+```bash
+python serve.py
+```
+
+> **What's the `data_parts/` thing?**
 > GitHub blocks single files larger than 100 MB. The 10 m DEM
 > (`rogaland_10m.tif`, ~700 MB) and the forest canopy mesh (`canopy.bin`,
 > ~110 MB) are stored under `data_parts/` as chunks under 100 MB each.
-> `reconstitute.py` glues them back together. It is safe to re-run.
+> `serve.py` (and the standalone `reconstitute.py`) glues them back together
+> on first run. Re-running is safe and a no-op.
 
 ## What you'll see
 
@@ -54,6 +66,8 @@ Distance sliders fine-tune the LOD switches for buildings and forest.
 | --- | --- |
 | `viewer.html` | The renderer. Three.js + custom shaders, no build step. |
 | `index.html` | A simpler static preview page (PNG renders of the DEM). |
+| `serve.py` | One-shot launcher: reconstitutes data + starts the local web server. |
+| `reconstitute.py` | Standalone version of just the data-reassembly step. |
 | `data_parts/` | Chunked source data files (joined by `reconstitute.py`). |
 | `tiles/` | Mapbox-style terrain-RGB pyramid of the DEM (PNG tiles). |
 | `forest.bin` | Per-tree seed records (TRE1 binary). |
