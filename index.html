@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Rogaland topography previews</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background:#0d1117; color:#e6edf3; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; }
+  header { padding: 18px 24px; border-bottom: 1px solid #30363d; }
+  h1 { margin: 0 0 4px; font-size: 20px; font-weight: 600; }
+  p.sub { margin: 0; color:#8b949e; font-size: 13px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; padding: 16px; }
+  @media (max-width: 1100px) { .grid { grid-template-columns: 1fr; } }
+  figure { margin: 0; background:#161b22; border:1px solid #30363d; border-radius: 8px; overflow: hidden; display: flex; flex-direction: column; }
+  figcaption { padding: 10px 14px; border-bottom: 1px solid #30363d; font-size: 13px; }
+  figcaption b { color:#79c0ff; }
+  .imgwrap { background:#000; display:flex; align-items:center; justify-content:center; cursor: zoom-in; }
+  .imgwrap img { max-width: 100%; height: auto; display: block; transition: transform .25s ease; }
+  .imgwrap.zoomed { cursor: zoom-out; overflow: auto; max-height: 90vh; }
+  .imgwrap.zoomed img { max-width: none; transform: none; }
+  .meta { padding: 10px 14px; font-size: 12px; color:#8b949e; border-top: 1px solid #30363d; display:flex; justify-content:space-between; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Rogaland topography &mdash; Kartverket NHM (DTM + bathymetry, EPSG:25833)</h1>
+  <p class="sub">Click an image to toggle full-resolution view. Source: <code>NHM_DTM_TOPOBATHY_25833</code> via hoydedata.no ArcGIS ImageServer.</p>
+</header>
+<section class="grid">
+  <figure>
+    <figcaption><b>Overview &mdash; 100 m</b> &middot; full topo + deep bathymetry (down to &minus;766&nbsp;m)</figcaption>
+    <div class="imgwrap"><img src="rogaland_preview.png" alt="Rogaland 100m DTM preview"></div>
+    <div class="meta"><span>1500 &times; 2600 px</span><span><a style="color:#79c0ff" href="rogaland_100m.tif">rogaland_100m.tif (15 MB)</a></span></div>
+  </figure>
+  <figure>
+    <figcaption><b>Densified &mdash; 10 m</b> &middot; land &amp; shallow-water DTM, much higher detail</figcaption>
+    <div class="imgwrap"><img src="rogaland_10m_preview.png" alt="Rogaland 10m DTM preview"></div>
+    <div class="meta"><span>15000 &times; 26000 px</span><span><a style="color:#79c0ff" href="rogaland_10m.tif">rogaland_10m.tif (694 MB)</a></span></div>
+  </figure>
+</section>
+<script>
+  for (const w of document.querySelectorAll('.imgwrap')) {
+    w.addEventListener('click', () => w.classList.toggle('zoomed'));
+  }
+</script>
+</body>
+</html>

@@ -1,0 +1,16 @@
+{
+  "crs": "EPSG:25833",
+  "rootX": -105000.0,
+  "rootY": 6440000.0,
+  "rootSize": 260000.0,
+  "tileSize": 256,
+  "maxZ": 6,
+  "encoding": "mapbox-rgb",
+  "src": {
+    "xMin": -50000.0,
+    "yMin": 6440000.0,
+    "xMax": 100000.0,
+    "yMax": 6700000.0
+  },
+  "elevMax": 1720.764404296875
+}
