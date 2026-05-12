@@ -10,6 +10,7 @@ Equivalently:
 from __future__ import annotations
 
 import argparse
+import errno
 import http.server
 import socketserver
 import sys
@@ -20,28 +21,59 @@ import reconstitute
 
 ROOT = Path(__file__).resolve().parent
 
+MAX_PORT_TRIES = 20
+
+
+def _bind_server(start_port: int, handler) -> tuple[socketserver.TCPServer, int]:
+    """Try to bind starting at start_port, falling back to the next available port."""
+    last_err: OSError | None = None
+    for offset in range(MAX_PORT_TRIES):
+        port = start_port + offset
+        try:
+            httpd = socketserver.TCPServer(("", port), handler)
+        except OSError as exc:
+            if exc.errno in (errno.EADDRINUSE, errno.EACCES, getattr(errno, "WSAEADDRINUSE", 10048)):
+                print(f"  port {port} is in use, trying {port + 1} ...", flush=True)
+                last_err = exc
+                continue
+            raise
+        return httpd, port
+    raise RuntimeError(
+        f"Could not find an available port in range {start_port}..{start_port + MAX_PORT_TRIES - 1}"
+    ) from last_err
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--port", type=int, default=8000, help="Port to serve on (default: 8000)")
+    parser.add_argument("--port", type=int, default=8000, help="Preferred port (default: 8000); falls back to next free port if busy")
     parser.add_argument("--no-browser", action="store_true", help="Don't auto-open the viewer in a browser")
     args = parser.parse_args()
 
     print("Step 1/2: checking data files ...", flush=True)
     reconstitute.run()
 
-    print(f"\nStep 2/2: starting local server on http://localhost:{args.port}/", flush=True)
-    print(f"  viewer:  http://localhost:{args.port}/viewer.html", flush=True)
-    print(f"  preview: http://localhost:{args.port}/index.html", flush=True)
-    print("Press Ctrl+C to stop.\n", flush=True)
+    print(f"\nStep 2/2: starting local server (preferred port {args.port}) ...", flush=True)
 
     handler = http.server.SimpleHTTPRequestHandler
     socketserver.TCPServer.allow_reuse_address = True
     try:
-        with socketserver.TCPServer(("", args.port), handler) as httpd:
+        httpd, port = _bind_server(args.port, handler)
+    except RuntimeError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    if port != args.port:
+        print(f"  (port {args.port} was busy; using {port} instead)", flush=True)
+    print(f"\nServing on http://localhost:{port}/", flush=True)
+    print(f"  viewer:  http://localhost:{port}/viewer.html", flush=True)
+    print(f"  preview: http://localhost:{port}/index.html", flush=True)
+    print("Press Ctrl+C to stop.\n", flush=True)
+
+    try:
+        with httpd:
             if not args.no_browser:
                 try:
-                    webbrowser.open(f"http://localhost:{args.port}/viewer.html")
+                    webbrowser.open(f"http://localhost:{port}/viewer.html")
                 except Exception:
                     pass
             httpd.serve_forever()

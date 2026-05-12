@@ -30,6 +30,14 @@
   <label>building visibility (km) <input id="bldRange" type="range" min="3" max="60" step="1" value="22"> <span id="bldRangev">22</span></label>
   <label>canopy range (km) <input id="canopyRange" type="range" min="3" max="50" step="1" value="30"> <span id="canopyRangev">30</span></label>
   <label>canopy LOD switch (km) <input id="canopyLod" type="range" min="0.3" max="6" step="0.1" value="1.5"> <span id="canopyLodv">1.5</span></label>
+  <details id="geo-panel" style="margin-top:6px;border-top:1px solid #444;padding-top:4px;">
+    <summary style="cursor:pointer;font-weight:600;">Geology</summary>
+    <label><input type="checkbox" id="cb-bedrock"> Bedrock</label><br>
+    <label><input type="checkbox" id="cb-quat"> Quaternary</label><br>
+    <label><input type="checkbox" id="cb-faults"> Faults</label><br>
+    <label>Geology blend: <input type="range" id="r-geo-blend" min="0" max="1" step="0.05" value="0.6"></label>
+    <span id="r-geo-blend-val">0.60</span>
+  </details>
 </div>
 
 <script type="importmap">
@@ -56,7 +64,7 @@ const CENTER_Y = (SRC.yMin + SRC.yMax) / 2;
 
 THREE.Object3D.DEFAULT_UP.set(0,0,1);
 
-const renderer = new THREE.WebGLRenderer({ antialias:true, powerPreference:'high-performance' });
+const renderer = new THREE.WebGLRenderer({ antialias:true, powerPreference:'high-performance', logarithmicDepthBuffer: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -81,12 +89,46 @@ controls.maxDistance = ROOT_SIZE*2;
 controls.maxPolarAngle = Math.PI*0.49;
 controls.zoomSpeed = 1.6;
 
-// water plane
+// ---------- persist camera + target across reloads ----------
+const CAM_STORAGE_KEY = 'norwayterrain.cam.v1';
+(function restoreCamera(){
+  try {
+    const raw = localStorage.getItem(CAM_STORAGE_KEY);
+    if (!raw) return;
+    const s = JSON.parse(raw);
+    if (!s || !Array.isArray(s.p) || !Array.isArray(s.t)) return;
+    if (s.p.length !== 3 || s.t.length !== 3) return;
+    if (!s.p.every(Number.isFinite) || !s.t.every(Number.isFinite)) return;
+    camera.position.fromArray(s.p);
+    controls.target.fromArray(s.t);
+    camera.updateMatrixWorld();
+    controls.update();
+  } catch (e) { /* ignore corrupt state */ }
+})();
+
+let _camSaveTimer = 0;
+function _saveCameraNow(){
+  try {
+    localStorage.setItem(CAM_STORAGE_KEY, JSON.stringify({
+      p: camera.position.toArray(),
+      t: controls.target.toArray(),
+    }));
+  } catch (e) { /* quota / private mode — ignore */ }
+}
+controls.addEventListener('change', () => {
+  if (_camSaveTimer) return;
+  _camSaveTimer = setTimeout(() => { _camSaveTimer = 0; _saveCameraNow(); }, 250);
+});
+addEventListener('beforeunload', _saveCameraNow);
+
+
+// water plane (held slightly above sea-level terrain to avoid z-fighting offshore)
 const water = new THREE.Mesh(
   new THREE.PlaneGeometry(ROOT_SIZE*1.5, ROOT_SIZE*1.5),
   new THREE.MeshBasicMaterial({ color: 0x123048 })
 );
-water.position.z = -0.5;
+water.position.z = 1.0;
+water.renderOrder = -1;
 scene.add(water);
 
 const SUN = new THREE.Vector3(-0.4, -0.6, 0.85).normalize();
@@ -97,18 +139,26 @@ const overlayUniforms = {
   uOffset: { value: 12.0 },
 };
 const overlayVert = /* glsl */`
+#include <common>
+#include <logdepthbuf_pars_vertex>
 uniform float uExag;
 uniform float uOffset;
 void main(){
   vec3 p = position;
   p.z = max(p.z, 0.0) * uExag + uOffset;
   gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
+  #include <logdepthbuf_vertex>
 }
 `;
 const overlayFrag = /* glsl */`
 precision highp float;
+#include <common>
+#include <logdepthbuf_pars_fragment>
 uniform vec3 uColor;
-void main(){ gl_FragColor = vec4(uColor, 1.0); }
+void main(){
+  #include <logdepthbuf_fragment>
+  gl_FragColor = vec4(uColor, 1.0);
+}
 `;
 function makeLineMaterial(color){
   return new THREE.ShaderMaterial({
@@ -241,6 +291,8 @@ function makeHouseGeometry(){
 }
 
 const buildingVert = /* glsl */`
+#include <common>
+#include <logdepthbuf_pars_vertex>
 attribute float aPart;
 attribute vec3 iPos;
 attribute vec3 iSize;
@@ -275,9 +327,12 @@ void main(){
   vColor  = (aPart < 0.5) ? iWallColor : iRoofColor;
   vWorld  = p;
   gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
+  #include <logdepthbuf_vertex>
 }`;
 const buildingFrag = /* glsl */`
 precision highp float;
+#include <common>
+#include <logdepthbuf_pars_fragment>
 varying vec3 vNormal;
 varying vec3 vColor;
 varying vec3 vWorld;
@@ -288,6 +343,7 @@ uniform float uFogFar;
 uniform float uFadeNear;
 uniform float uFadeFar;
 void main(){
+  #include <logdepthbuf_fragment>
   vec3 N = normalize(vNormal);
   float diff = clamp(dot(N, normalize(uSun)), 0.0, 1.0);
   float wrap = 0.30 + 0.85 * diff;
@@ -515,6 +571,8 @@ function makeTreeGeometry(){
 }
 
 const treeVert = /* glsl */`
+#include <common>
+#include <logdepthbuf_pars_vertex>
 attribute float aPart;
 attribute vec3 iPos;
 attribute vec2 iSize;        // x = base radius (m), y = height (m)
@@ -553,9 +611,12 @@ void main(){
   else                  vColor = vec3(0.27, 0.18, 0.10); // trunk
   vWorld = p;
   gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
+  #include <logdepthbuf_vertex>
 }`;
 const treeFrag = /* glsl */`
 precision highp float;
+#include <common>
+#include <logdepthbuf_pars_fragment>
 varying vec3 vNormal;
 varying vec3 vColor;
 varying vec3 vWorld;
@@ -566,6 +627,7 @@ uniform float uFogFar;
 uniform float uFadeNear;
 uniform float uFadeFar;
 void main(){
+  #include <logdepthbuf_fragment>
   vec3 N = normalize(vNormal);
   float diff = clamp(dot(N, normalize(uSun)), 0.0, 1.0);
   float wrap = 0.35 + 0.80 * diff;
@@ -597,6 +659,8 @@ function makeTreeBillboardGeometry(){
   return g;
 }
 const treeBbVert = /* glsl */`
+#include <common>
+#include <logdepthbuf_pars_vertex>
 attribute vec2 aQuad;
 attribute vec3 iPos;
 attribute vec2 iSize;
@@ -627,9 +691,12 @@ void main(){
   vWorld = world;
   vQuad = aQuad;
   gl_Position = projectionMatrix * viewMatrix * vec4(world, 1.0);
+  #include <logdepthbuf_vertex>
 }`;
 const treeBbFrag = /* glsl */`
 precision highp float;
+#include <common>
+#include <logdepthbuf_pars_fragment>
 varying vec3 vColor;
 varying vec3 vWorld;
 varying vec2 vQuad;
@@ -640,6 +707,7 @@ uniform float uFogFar;
 uniform float uFadeNear;
 uniform float uFadeFar;
 void main(){
+  #include <logdepthbuf_fragment>
   // soft conical alpha mask: opaque in centre, fading at outer edge
   float u = abs(vQuad.x);
   float taper = 1.0 - vQuad.y * 0.80; // matches geometry taper
@@ -688,8 +756,11 @@ const treeBbMaterial = new THREE.ShaderMaterial({
   side: THREE.DoubleSide,
 });
 
+
 // ---------------- canopy carpet -----------------
 const canopyVert = /* glsl */`
+#include <common>
+#include <logdepthbuf_pars_vertex>
 uniform float uExag;
 uniform float uExtraLift;
 varying vec3 vWorld;
@@ -710,10 +781,13 @@ void main(){
   vec4 vp = viewMatrix * vec4(world, 1.0);
   vDist = -vp.z;
   gl_Position = projectionMatrix * vp;
+  #include <logdepthbuf_vertex>
 }`;
 
 const canopyFrag = /* glsl */`
 precision highp float;
+#include <common>
+#include <logdepthbuf_pars_fragment>
 varying vec3 vWorld;
 varying float vBaseZ;
 varying float vDist;
@@ -742,6 +816,7 @@ float fbm(vec2 p){
 }
 
 void main(){
+  #include <logdepthbuf_fragment>
   vec3 N = normalize(cross(dFdx(vWorld), dFdy(vWorld)));
   float n1 = fbm(vWorld.xy * 0.013);
   float n2 = fbm(vWorld.xy * 0.045 + 17.0);
@@ -846,23 +921,29 @@ const waterUniforms = {
 const waterMaterial = new THREE.ShaderMaterial({
   uniforms: waterUniforms,
   vertexShader: `
+    #include <common>
+    #include <logdepthbuf_pars_vertex>
     uniform float uExag;
     varying vec3 vWorld;
     varying float vDepthFade;
     void main(){
       vec3 p = position;
-      p.z *= uExag;
+      p.z = p.z * uExag + 0.3;
       vec4 wp = modelMatrix * vec4(p, 1.0);
       vWorld = wp.xyz;
       vDepthFade = clamp(p.z / 200.0, 0.0, 1.0);
       gl_Position = projectionMatrix * viewMatrix * wp;
+      #include <logdepthbuf_vertex>
     }
   `,
   fragmentShader: `
+    #include <common>
+    #include <logdepthbuf_pars_fragment>
     uniform vec3 uSun;
     varying vec3 vWorld;
     varying float vDepthFade;
     void main(){
+      #include <logdepthbuf_fragment>
       vec3 dx = dFdx(vWorld);
       vec3 dy = dFdy(vWorld);
       vec3 n = normalize(cross(dx, dy));
@@ -876,6 +957,9 @@ const waterMaterial = new THREE.ShaderMaterial({
   `,
   side: THREE.FrontSide,
   extensions: { derivatives: true },
+  polygonOffset: true,
+  polygonOffsetFactor: -1,
+  polygonOffsetUnits: -4,
 });
 
 const waterCells = [];
@@ -1113,6 +1197,8 @@ let plane = new THREE.PlaneGeometry(1, 1, SEG, SEG);
 
 // ---------- shader ----------
 const vert = /* glsl */`
+#include <common>
+#include <logdepthbuf_pars_vertex>
 uniform sampler2D uHeight;
 uniform vec2 uOriginXY;
 uniform float uTileSize;
@@ -1133,11 +1219,14 @@ void main(){
   vWorld = vec3(wxy, h);
   vH = h;
   gl_Position = projectionMatrix * viewMatrix * vec4(vWorld, 1.0);
+  #include <logdepthbuf_vertex>
 }
 `;
 
 const frag = /* glsl */`
 precision highp float;
+#include <common>
+#include <logdepthbuf_pars_fragment>
 uniform sampler2D uHeight;
 uniform float uTileSize;
 uniform float uExag;
@@ -1149,6 +1238,17 @@ uniform vec2 uUVOffset;
 uniform float uFogNear;
 uniform float uFogFar;
 uniform vec3 uFogColor;
+// ----- geology overlay uniforms (shared across all terrain materials) -----
+uniform sampler2D uBedTex;
+uniform sampler2D uBedPalette;
+uniform float uBedShow;       // 0 or 1
+uniform float uBedPalN;       // number of palette entries (>= 1)
+uniform sampler2D uQuatTex;
+uniform sampler2D uQuatPalette;
+uniform float uQuatShow;
+uniform float uQuatPalN;
+uniform vec4 uGeoBBox;        // xMin, yMin, xMax-xMin, yMax-yMin (centred world)
+uniform float uGeoOpacity;
 varying vec3 vWorld;
 varying vec2 vUv;
 varying float vH;
@@ -1157,6 +1257,15 @@ float sampleH(vec2 uv){
   vec2 sUv = uUVOffset + uv * uUVScale;
   vec2 tuv = vec2(sUv.x, 1.0 - sUv.y);
   return max(decode(texture2D(uHeight, tuv).rgb), 0.0) * uExag;
+}
+vec4 sampleGeo(sampler2D tex, sampler2D pal, float palN, vec2 wxy) {
+  vec2 uv = vec2((wxy.x - uGeoBBox.x) / uGeoBBox.z, (wxy.y - uGeoBBox.y) / uGeoBBox.w);
+  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return vec4(0.0);
+  vec2 rg = texture2D(tex, uv).rg;
+  float idF = floor(rg.r * 255.0 + 0.5) + floor(rg.g * 255.0 + 0.5) * 256.0;
+  if (idF < 0.5 || palN < 1.0) return vec4(0.0);
+  vec2 puv = vec2((idF - 0.5) / palN, 0.5);
+  return vec4(texture2D(pal, puv).rgb, 1.0);
 }
 vec3 ramp(float zReal){
   // Rogaland palette: emerald coastal forest → mossy heath → dark upland heath.
@@ -1173,6 +1282,7 @@ vec3 ramp(float zReal){
   return c4;
 }
 void main(){
+  #include <logdepthbuf_fragment>
   // identify the current quad cell of the geometry tessellation
   vec2 q  = floor(vUv * uSeg) / uSeg;
   float d = 1.0 / uSeg;
@@ -1210,6 +1320,15 @@ void main(){
 
   if (havg < 1.0) base = vec3(0.10, 0.18, 0.28);
   vec3 col = base * (0.40 + 0.70 * diff);
+  // --- geology overlay (raster-textured, no separate mesh, no pokethrough) ---
+  if (uBedShow > 0.5) {
+    vec4 g = sampleGeo(uBedTex, uBedPalette, uBedPalN, vWorld.xy);
+    col = mix(col, g.rgb * (0.40 + 0.70 * diff), g.a * uGeoOpacity);
+  }
+  if (uQuatShow > 0.5) {
+    vec4 g = sampleGeo(uQuatTex, uQuatPalette, uQuatPalN, vWorld.xy);
+    col = mix(col, g.rgb * (0.40 + 0.70 * diff), g.a * uGeoOpacity);
+  }
   // distance fog
   float fogF = smoothstep(uFogNear, uFogFar, length(vWorld - cameraPosition));
   col = mix(col, uFogColor, fogF);
@@ -1217,8 +1336,30 @@ void main(){
 }
 `;
 
+// Shared geology overlay uniforms — all terrain materials get these
+// by reference, so toggling a value affects every tile mesh at once.
+const _dummyGeoTex = new THREE.DataTexture(new Uint8Array([0, 0]), 1, 1, THREE.RGFormat, THREE.UnsignedByteType);
+_dummyGeoTex.needsUpdate = true;
+const _dummyPalTex = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1, THREE.RGBAFormat, THREE.UnsignedByteType);
+_dummyPalTex.needsUpdate = true;
+const geoUniforms = {
+  uBedTex:      { value: _dummyGeoTex },
+  uBedPalette:  { value: _dummyPalTex },
+  uBedShow:     { value: 0.0 },
+  uBedPalN:     { value: 1.0 },
+  uQuatTex:     { value: _dummyGeoTex },
+  uQuatPalette: { value: _dummyPalTex },
+  uQuatShow:    { value: 0.0 },
+  uQuatPalN:    { value: 1.0 },
+  uGeoBBox:     { value: new THREE.Vector4(0, 0, 1, 1) },
+  uGeoOpacity:  { value: 0.6 },
+};
+
 function makeMaterial(){
   return new THREE.ShaderMaterial({
+    polygonOffset: true,
+    polygonOffsetFactor: 1,
+    polygonOffsetUnits: 1,
     uniforms: {
       uHeight:   { value: null },
       uOriginXY: { value: new THREE.Vector2() },
@@ -1232,6 +1373,17 @@ function makeMaterial(){
       uFogNear:  { value: FOG_NEAR },
       uFogFar:   { value: FOG_FAR },
       uFogColor: { value: FOG_COLOR },
+      // geology overlay (shared-by-reference; updated once per uniform):
+      uBedTex:      geoUniforms.uBedTex,
+      uBedPalette:  geoUniforms.uBedPalette,
+      uBedShow:     geoUniforms.uBedShow,
+      uBedPalN:     geoUniforms.uBedPalN,
+      uQuatTex:     geoUniforms.uQuatTex,
+      uQuatPalette: geoUniforms.uQuatPalette,
+      uQuatShow:    geoUniforms.uQuatShow,
+      uQuatPalN:    geoUniforms.uQuatPalN,
+      uGeoBBox:     geoUniforms.uGeoBBox,
+      uGeoOpacity:  geoUniforms.uGeoOpacity,
     },
     vertexShader: vert,
     fragmentShader: frag,
@@ -1270,6 +1422,263 @@ function rebuildPlane(seg){
 // ---------- quadtree LOD ----------
 let SSE_PX = 3.0;
 let EXAG = 1.4;
+// ---------------- geology raster overlay (BRR1 / QRR1) -----------------
+// Bedrock + Quaternary are rendered as 2D rasters sampled by the terrain
+// fragment shader. Each pixel stores a uint16 class id (0 = nodata, 1..N
+// = palette index). Eliminates the pokethrough that the polygon-mesh
+// approach suffered from on steep terrain (e.g. Ålgård).
+let bedrockLookup = {};      // "1".. -> {name, color, scale}
+let quaternaryLookup = {};
+let bedrockRaster = null;    // { w, h, ids: Uint16Array, bbox: {xMin,yMin,xMax,yMax} }
+let quatRaster    = null;
+
+function _hexToRgbBytes(hex) {
+  if (!hex || hex.length !== 7) return [180, 180, 180];
+  return [
+    parseInt(hex.slice(1,3), 16),
+    parseInt(hex.slice(3,5), 16),
+    parseInt(hex.slice(5,7), 16),
+  ];
+}
+
+function _buildPaletteTex(lookupObj) {
+  // Find max id, build N x 1 RGBA8 texture (idx 0 = nodata = transparent).
+  let maxId = 0;
+  for (const k of Object.keys(lookupObj)) {
+    const n = parseInt(k, 10);
+    if (n > maxId) maxId = n;
+  }
+  const N = maxId + 1;
+  const data = new Uint8Array(N * 4);
+  for (let i = 0; i < N; i++) {
+    const entry = lookupObj[String(i)];
+    if (entry && entry.color) {
+      const [r, g, b] = _hexToRgbBytes(entry.color);
+      data[i*4 + 0] = r;
+      data[i*4 + 1] = g;
+      data[i*4 + 2] = b;
+      data[i*4 + 3] = 255;
+    } else {
+      data[i*4 + 3] = 0;
+    }
+  }
+  const tex = new THREE.DataTexture(data, N, 1, THREE.RGBAFormat, THREE.UnsignedByteType);
+  tex.minFilter = THREE.NearestFilter;
+  tex.magFilter = THREE.NearestFilter;
+  tex.wrapS = THREE.ClampToEdgeWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.needsUpdate = true;
+  return { tex, N };
+}
+
+async function _loadGeologyRaster(binUrl, paletteUrl, magic) {
+  let buf, lookupObj = {};
+  try {
+    const r = await fetch(binUrl);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    buf = await r.arrayBuffer();
+  } catch (e) {
+    console.warn(`${binUrl} not loaded:`, e.message);
+    return null;
+  }
+  try {
+    const jr = await fetch(paletteUrl);
+    if (jr.ok) lookupObj = await jr.json();
+  } catch {}
+
+  const dv = new DataView(buf);
+  const tag = String.fromCharCode(dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3));
+  if (tag !== magic) {
+    console.warn(`${binUrl}: bad magic ${tag}, expected ${magic}`);
+    return null;
+  }
+  const ver = dv.getUint32(4, true);
+  const w = dv.getUint32(8, true);
+  const h = dv.getUint32(12, true);
+  const xMin = dv.getFloat32(16, true);
+  const yMin = dv.getFloat32(20, true);
+  const xMax = dv.getFloat32(24, true);
+  const yMax = dv.getFloat32(28, true);
+  const ids = new Uint16Array(buf, 32, w * h);
+  // RG-packed (uint16 low byte in R, high byte in G) view for the GPU
+  const rgBytes = new Uint8Array(buf, 32, w * h * 2);
+  const tex = new THREE.DataTexture(rgBytes, w, h, THREE.RGFormat, THREE.UnsignedByteType);
+  tex.minFilter = THREE.NearestFilter;
+  tex.magFilter = THREE.NearestFilter;
+  tex.wrapS = THREE.ClampToEdgeWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.flipY = false;
+  tex.needsUpdate = true;
+  const palInfo = _buildPaletteTex(lookupObj);
+  console.log(`${binUrl}: ${w}x${h} raster, palette N=${palInfo.N}`);
+  return {
+    w, h, ids, bbox: { xMin, yMin, xMax, yMax },
+    tex, paletteTex: palInfo.tex, paletteN: palInfo.N,
+    lookup: lookupObj,
+  };
+}
+
+function _setGeoBBoxFrom(r) {
+  // Use the first loaded raster to set the shared bbox. Both layers cover
+  // the same DEM extent so the bbox is identical for either.
+  geoUniforms.uGeoBBox.value.set(
+    r.bbox.xMin,
+    r.bbox.yMin,
+    r.bbox.xMax - r.bbox.xMin,
+    r.bbox.yMax - r.bbox.yMin,
+  );
+}
+
+(async () => {
+  const r = await _loadGeologyRaster('bedrock_raster.bin', 'bedrock_palette.json', 'BRR1');
+  if (!r) return;
+  bedrockRaster = r;
+  bedrockLookup = r.lookup;
+  geoUniforms.uBedTex.value     = r.tex;
+  geoUniforms.uBedPalette.value = r.paletteTex;
+  geoUniforms.uBedPalN.value    = r.paletteN;
+  _setGeoBBoxFrom(r);
+})();
+(async () => {
+  const r = await _loadGeologyRaster('quaternary_raster.bin', 'quaternary_palette.json', 'QRR1');
+  if (!r) return;
+  quatRaster = r;
+  quaternaryLookup = r.lookup;
+  geoUniforms.uQuatTex.value     = r.tex;
+  geoUniforms.uQuatPalette.value = r.paletteTex;
+  geoUniforms.uQuatPalN.value    = r.paletteN;
+  _setGeoBBoxFrom(r);
+})();
+// ---------------- end geology raster overlay -----------------
+
+// ---------------- faults layer (FLT1) -----------------
+const faultsGroup = new THREE.Group();
+faultsGroup.visible = false;
+scene.add(faultsGroup);
+
+const faultMat = new THREE.LineBasicMaterial({ color: 0xe040c0, transparent: true, opacity: 0.95, depthWrite: false });
+
+(async () => {
+  let buf;
+  try {
+    const r = await fetch('faults.bin');
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    buf = await r.arrayBuffer();
+  } catch (e) { console.warn('faults.bin not loaded:', e.message); return; }
+  const dv = new DataView(buf);
+  const tag = String.fromCharCode(dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3));
+  if (tag !== 'FLT1') { console.warn('bad faults magic', tag); return; }
+  let off = 4;
+  const nGroups = dv.getUint32(off, true); off += 4;
+  let totalSegs = 0;
+  for (let g = 0; g < nGroups; g++) {
+    const typeIdx = dv.getUint8(off); off += 4;
+    const nVerts = dv.getUint32(off, true); off += 4;
+    const verts = new Float32Array(buf, off, nVerts * 3); off += nVerts * 12;
+    const positions = new Float32Array(verts.length);
+    for (let i = 0; i < nVerts; i++) {
+      positions[i*3]   = verts[i*3];
+      positions[i*3+1] = verts[i*3+1];
+      positions[i*3+2] = verts[i*3+2] * EXAG + 1.0 * EXAG;
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    const seg = new THREE.LineSegments(geo, faultMat);
+    seg.frustumCulled = false;
+    seg.renderOrder = 12;
+    faultsGroup.add(seg);
+    totalSegs += nVerts / 2;
+  }
+  console.log(`faults: ${totalSegs} segments`);
+})();
+// ---------------- end faults layer -----------------
+
+// ---------------- click-to-identify geology (raster lookup) -----------------
+function _sampleRaster(r, wx, wy) {
+  if (!r) return 0;
+  const { bbox, w, h, ids } = r;
+  const u = (wx - bbox.xMin) / (bbox.xMax - bbox.xMin);
+  const v = (wy - bbox.yMin) / (bbox.yMax - bbox.yMin);
+  if (u < 0 || u > 1 || v < 0 || v > 1) return 0;
+  let col = Math.floor(u * w);
+  let row = Math.floor(v * h);
+  if (col >= w) col = w - 1;
+  if (row >= h) row = h - 1;
+  return ids[row * w + col];
+}
+
+function _identify(px, py) {
+  const out = {};
+  const bid = _sampleRaster(bedrockRaster, px, py);
+  if (bid > 0 && bedrockLookup[String(bid)]) out.bedrock = bedrockLookup[String(bid)];
+  const qid = _sampleRaster(quatRaster, px, py);
+  if (qid > 0 && quaternaryLookup[String(qid)]) out.quat = quaternaryLookup[String(qid)];
+  return out;
+}
+
+const idPanel = document.createElement('div');
+idPanel.id = 'id-panel';
+idPanel.style.cssText = 'position:fixed;display:none;background:rgba(0,0,0,0.78);color:#cdd;padding:8px 22px 8px 10px;border:1px solid #555;border-radius:6px;font:12px system-ui;z-index:9999;max-width:260px';
+document.body.appendChild(idPanel);
+
+const idClose = document.createElement('button');
+idClose.type = 'button';
+idClose.setAttribute('aria-label', 'Close');
+idClose.textContent = '×';
+idClose.style.cssText = 'position:absolute;top:1px;right:3px;width:14px;height:14px;padding:0;line-height:12px;font-size:14px;background:transparent;color:#aaa;border:none;cursor:pointer;font-family:system-ui';
+idClose.addEventListener('mouseenter', () => { idClose.style.color = '#fff'; });
+idClose.addEventListener('mouseleave', () => { idClose.style.color = '#aaa'; });
+idClose.addEventListener('click', (e) => {
+  e.stopPropagation();
+  idPanel.style.display = 'none';
+  if (_idHideTimer) { clearTimeout(_idHideTimer); _idHideTimer = null; }
+});
+idPanel.appendChild(idClose);
+
+const idContent = document.createElement('div');
+idPanel.appendChild(idContent);
+
+let _idHideTimer = null;
+function showIdPanel(x, y, info) {
+  if (!info.bedrock && !info.quat) { idPanel.style.display = 'none'; return; }
+  const swatch = (hex) => `<span style="display:inline-block;width:10px;height:10px;background:${hex};border:1px solid #888;margin-right:4px;vertical-align:middle"></span>`;
+  let html = '';
+  if (info.bedrock) html += `<div>${swatch(info.bedrock.color)}<b>Bedrock:</b> ${info.bedrock.name} <span style="opacity:0.6">(${info.bedrock.scale})</span></div>`;
+  if (info.quat)    html += `<div>${swatch(info.quat.color)}<b>Quaternary:</b> ${info.quat.name} <span style="opacity:0.6">(${info.quat.scale})</span></div>`;
+  idContent.innerHTML = html;
+  idPanel.style.left = `${x + 12}px`;
+  idPanel.style.top  = `${y + 12}px`;
+  idPanel.style.display = 'block';
+  if (_idHideTimer) clearTimeout(_idHideTimer);
+  _idHideTimer = setTimeout(() => { idPanel.style.display = 'none'; }, 8000);
+}
+
+let _downX = 0, _downY = 0, _downT = 0;
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  if (e.button !== 0) return;
+  _downX = e.clientX; _downY = e.clientY; _downT = performance.now();
+});
+renderer.domElement.addEventListener('pointerup', (e) => {
+  if (e.button !== 0) return;
+  if (Math.abs(e.clientX - _downX) > 4 || Math.abs(e.clientY - _downY) > 4) return;
+  if (performance.now() - _downT > 500) return;
+  if (geoUniforms.uBedShow.value < 0.5 && geoUniforms.uQuatShow.value < 0.5) return;
+
+  const rect = renderer.domElement.getBoundingClientRect();
+  const ndc = new THREE.Vector2(
+    ((e.clientX - rect.left) / rect.width) * 2 - 1,
+    -((e.clientY - rect.top) / rect.height) * 2 + 1,
+  );
+  const ray = new THREE.Raycaster();
+  ray.setFromCamera(ndc, camera);
+  const hits = ray.intersectObjects(meshUsed, false);
+  if (!hits.length) return;
+  const wx = hits[0].point.x;
+  const wy = hits[0].point.y;
+  const info = _identify(wx, wy);
+  showIdPanel(e.clientX, e.clientY, info);
+});
+// ---------------- end click-to-identify -----------------
 
 function tileBoundsWorld(z,x,y){
   const n = 1 << z;
@@ -1411,6 +1820,117 @@ function drawTile(z,x,y, b, tz,tx,ty, tex){
   drawn++;
 }
 
+// ---------- compass overlay (bottom-left) ----------
+const compassScene = new THREE.Scene();
+const compassCam = new THREE.PerspectiveCamera(35, 1, 0.1, 100);
+compassCam.up.set(0,0,1);
+compassScene.add(new THREE.AmbientLight(0xffffff, 0.55));
+const _compassLight = new THREE.DirectionalLight(0xffffff, 0.9);
+_compassLight.position.set(2, 3, 4);
+compassScene.add(_compassLight);
+
+const compassArrow = new THREE.Group();
+
+// Flat extruded arrow shape in the XY plane (points +Y = north).
+const _arrowShape = new THREE.Shape();
+_arrowShape.moveTo(-0.12, -0.9);
+_arrowShape.lineTo( 0.12, -0.9);
+_arrowShape.lineTo( 0.12,  0.4);
+_arrowShape.lineTo( 0.36,  0.4);
+_arrowShape.lineTo( 0.00,  1.05);
+_arrowShape.lineTo(-0.36,  0.4);
+_arrowShape.lineTo(-0.12,  0.4);
+_arrowShape.lineTo(-0.12, -0.9);
+const _arrowGeom = new THREE.ExtrudeGeometry(_arrowShape, {
+  depth: 0.10,
+  bevelEnabled: true,
+  bevelThickness: 0.02,
+  bevelSize: 0.015,
+  bevelSegments: 2,
+  curveSegments: 1,
+});
+// Toon-style: each face a uniform colour band with a clean step gradient.
+const _toonGradient = (() => {
+  const d = new Uint8Array([90,90,90,255, 200,200,200,255, 255,255,255,255]);
+  const t = new THREE.DataTexture(d, 3, 1, THREE.RGBAFormat);
+  t.needsUpdate = true;
+  t.minFilter = THREE.NearestFilter;
+  t.magFilter = THREE.NearestFilter;
+  t.generateMipmaps = false;
+  return t;
+})();
+const _arrowMat = new THREE.MeshToonMaterial({
+  color: 0xffd21a,
+  gradientMap: _toonGradient,
+});
+_arrowMat.flatShading = true;
+_arrowMat.polygonOffset = true;
+_arrowMat.polygonOffsetFactor = 1;
+_arrowMat.polygonOffsetUnits = 1;
+const _arrowMesh = new THREE.Mesh(_arrowGeom, _arrowMat);
+compassArrow.add(_arrowMesh);
+
+// Thin black outline along sharp edges.
+const _arrowEdges = new THREE.LineSegments(
+  new THREE.EdgesGeometry(_arrowGeom, 18),
+  new THREE.LineBasicMaterial({ color: 0x000000 })
+);
+compassArrow.add(_arrowEdges);
+
+// "N" label as a sprite at the tip, in the same depth space (so the arrow can occlude it).
+const _nCanvas = document.createElement('canvas');
+_nCanvas.width = 96; _nCanvas.height = 96;
+{
+  const c = _nCanvas.getContext('2d');
+  c.clearRect(0, 0, 96, 96);
+  c.fillStyle = '#ffffff';
+  c.strokeStyle = '#000000';
+  c.lineWidth = 6;
+  c.font = 'bold 72px sans-serif';
+  c.textAlign = 'center'; c.textBaseline = 'middle';
+  c.strokeText('N', 48, 52);
+  c.fillText('N', 48, 52);
+}
+const _nTex = new THREE.CanvasTexture(_nCanvas);
+_nTex.colorSpace = THREE.SRGBColorSpace;
+_nTex.anisotropy = 4;
+const _nSprite = new THREE.Sprite(new THREE.SpriteMaterial({
+  map: _nTex, depthTest: true, depthWrite: false, transparent: true,
+}));
+_nSprite.scale.set(0.34, 0.34, 1);
+// Sit the label at the tip, centred in the arrow's thickness so the arrow body can occlude it.
+_nSprite.position.set(0, 1.32, 0.05);
+compassArrow.add(_nSprite);
+
+compassScene.add(compassArrow);
+
+const COMPASS_SIZE_PX = 140;
+const COMPASS_PAD_PX = 16;
+const COMPASS_DIST = 3.4;
+const _compassFwd = new THREE.Vector3();
+
+function renderCompass() {
+  // Mirror main camera orientation around the arrow's origin so visual north matches.
+  _compassFwd.set(0, 0, -1).applyQuaternion(camera.quaternion);
+  compassCam.position.copy(_compassFwd).multiplyScalar(-COMPASS_DIST);
+  compassCam.quaternion.copy(camera.quaternion);
+  compassCam.updateMatrixWorld();
+
+  const s = COMPASS_SIZE_PX;
+  const x = COMPASS_PAD_PX;
+  const y = COMPASS_PAD_PX; // GL origin is bottom-left, so this places it at bottom-left
+  const prevAutoClear = renderer.autoClear;
+  renderer.autoClear = false;
+  renderer.setScissorTest(true);
+  renderer.setViewport(x, y, s, s);
+  renderer.setScissor(x, y, s, s);
+  renderer.clearDepth();
+  renderer.render(compassScene, compassCam);
+  renderer.setScissorTest(false);
+  renderer.setViewport(0, 0, window.innerWidth, window.innerHeight);
+  renderer.autoClear = prevAutoClear;
+}
+
 // ---------- main loop ----------
 let last = performance.now(), frames=0;
 function loop(){
@@ -1428,6 +1948,7 @@ function loop(){
   cullForest();
   evictCache();
   renderer.render(scene, camera);
+  renderCompass();
 
   frames++;
   const now = performance.now();
@@ -1440,7 +1961,7 @@ function loop(){
 }
 
 const exagEl = document.getElementById('exag');
-exagEl.oninput = () => { EXAG = +exagEl.value; document.getElementById('exagv').textContent = EXAG.toFixed(2); overlayUniforms.uExag.value = EXAG; buildingUniforms.uExag.value = EXAG; treeUniforms.uExag.value = EXAG; canopyUniforms.uExag.value = EXAG; waterUniforms.uExag.value = EXAG; };
+exagEl.oninput = () => { EXAG = +exagEl.value; document.getElementById('exagv').textContent = EXAG.toFixed(2); overlayUniforms.uExag.value = EXAG; buildingUniforms.uExag.value = EXAG; treeUniforms.uExag.value = EXAG; canopyUniforms.uExag.value = EXAG; waterUniforms.uExag.value = EXAG; /* faults z is baked at load time — updating fault EXAG requires geometry rebuild (out of scope) */ };
 const sseEl = document.getElementById('sse');
 sseEl.oninput = () => { SSE_PX = +sseEl.value; document.getElementById('ssev').textContent = SSE_PX.toFixed(1); };
 const segEl = document.getElementById('seg');
@@ -1448,7 +1969,7 @@ segEl.oninput = () => { rebuildPlane(+segEl.value); document.getElementById('seg
 document.getElementById('showRoads').onchange = e => { roadsGroup.visible = e.target.checked; };
 document.getElementById('showTowns').onchange = e => { townsGroup.visible = e.target.checked; };
 document.getElementById('showBld').onchange = e => { buildingsGroup.visible = e.target.checked; };
-document.getElementById('showTrees').onchange = e => { treesGroup.visible = e.target.checked; canopyGroup.visible = e.target.checked; };
+document.getElementById('showTrees').onchange = e => { treesGroup.visible = e.target.checked; canopyGroup.visible = e.target.checked; _updateForestVsGeology(); };
 const drapeEl = document.getElementById('drape');
 drapeEl.oninput = () => { overlayUniforms.uOffset.value = +drapeEl.value; document.getElementById('drapev').textContent = drapeEl.value; };
 const bldRangeEl = document.getElementById('bldRange');
@@ -1477,6 +1998,31 @@ canopyLodEl.oninput = () => {
   canopyUniforms.uFadeNear.value = CANOPY_LOD_LO;
   canopyUniforms.uFadeFar.value  = CANOPY_LOD_HI;
 };
+
+function _updateForestVsGeology() {
+  const geoOn = geoUniforms.uBedShow.value > 0.5 || geoUniforms.uQuatShow.value > 0.5;
+  const treesWanted = document.getElementById('showTrees').checked;
+  treesGroup.visible  = treesWanted && !geoOn;
+  canopyGroup.visible = treesWanted && !geoOn;
+}
+document.getElementById('cb-bedrock').addEventListener('change', e => {
+  geoUniforms.uBedShow.value = e.target.checked ? 1.0 : 0.0;
+  _updateForestVsGeology();
+});
+document.getElementById('cb-quat').addEventListener('change', e => {
+  geoUniforms.uQuatShow.value = e.target.checked ? 1.0 : 0.0;
+  _updateForestVsGeology();
+});
+document.getElementById('cb-faults').addEventListener('change', e => {
+  faultsGroup.visible = e.target.checked;
+});
+const blendInput = document.getElementById('r-geo-blend');
+const blendVal = document.getElementById('r-geo-blend-val');
+blendInput.addEventListener('input', e => {
+  const v = parseFloat(e.target.value);
+  geoUniforms.uGeoOpacity.value = v;
+  blendVal.textContent = v.toFixed(2);
+});
 
 addEventListener('resize', () => {
   camera.aspect = innerWidth/innerHeight;

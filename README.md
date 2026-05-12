@@ -24,7 +24,7 @@ uv run serve.py
 
 That's it. The script will:
 1. Reconstitute the two big data files from `data_parts/` if needed (a few seconds, only happens the first time).
-2. Start a local web server on <http://localhost:8000/>.
+2. Start a local web server on <http://localhost:8000/> (or the next free port if 8000 is busy — the actual URL is printed on startup).
 3. Open the viewer in your default browser automatically.
 
 Press **Ctrl+C** in the terminal to stop the server.
@@ -60,6 +60,12 @@ exaggeration, terrain detail (screen-space error and tessellation), and
 which layers are visible (roads, kommune boundaries, buildings, forest).
 Distance sliders fine-tune the LOD switches for buildings and forest.
 
+The **Geology** subpanel (top-right) toggles three additional layers — Bedrock,
+Quaternary deposits, and Faults — sourced from NGU. Use the blend slider to fade
+the geological fills against the natural terrain palette. With any geology layer
+visible, click anywhere on the ground to see the rock type and surface deposit
+at that point.
+
 ## What's in here
 
 | File / folder | What it is |
@@ -74,6 +80,9 @@ Distance sliders fine-tune the LOD switches for buildings and forest.
 | `buildings.bin` | OSM building footprints + heights (BLD1 binary). |
 | `osm.bin` | Major roads + kommune boundaries (OSM2 binary). |
 | `water.bin` | Inland water-body mesh (WATR binary). |
+| `bedrock_raster.bin` + `bedrock_palette.json` | NGU bedrock raster overlay + palette (BRR1 binary, 50 m px). |
+| `quaternary_raster.bin` + `quaternary_palette.json` | NGU Quaternary deposits raster overlay + palette (QRR1 binary, 50 m px). |
+| `faults.bin` | NGU structural fault lines (FLT1 binary). |
 | `*.py` | Offline data-pipeline scripts (you don't need to run these). |
 | `SPEC.md` | Full feature & data-source specification (read this if you want to reimplement the renderer in another stack). |
 
@@ -89,6 +98,9 @@ want to rebuild from raw sources, the scripts in this folder do that:
 - `forest_polys.py` — builds canopy mesh + per-tree records from ESA
   WorldCover class 10.
 - `water_polys.py` — builds the inland-water mesh from WorldCover class 80.
+- `geology_fetch.py` — pulls NGU bedrock + Quaternary + faults via WFS for the
+  Rogaland bbox. Slow (tens of minutes) on first run; caches per-tile responses
+  under `geology_cache/`. Requires `pyproj` in addition to the deps above.
 
 Each script requires `numpy`, `rasterio`, `requests` and `shapely`. The
 recommended invocation pattern is:
@@ -110,6 +122,9 @@ uv run --with numpy --with rasterio --with requests --with shapely python <scrip
   [ODbL](https://www.openstreetmap.org/copyright).
 - **Forest + water cover**: ESA WorldCover v200 2021 product (10 m global
   land cover). © ESA WorldCover project, CC BY 4.0.
+- **Geology**: NGU (Norges geologiske undersøkelse), bedrock + Quaternary
+  + structural data via the public WFS services. © NGU,
+  [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
 
 The rendering code in this repository is otherwise free to copy and
 adapt. See `SPEC.md` for the full visual / aesthetic specification.
