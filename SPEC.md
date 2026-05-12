@@ -616,6 +616,86 @@ to avoid shore z-fighting.
 
 ---
 
+## 9. Geology overlay
+
+### 9.1 Source data
+
+- **Bedrock**: NGU "Berggrunn" WFS, multi-scale (preferring N50 1:50,000 where coverage exists, falling back to N250 1:250,000). Polygons with attributes including `bergartnavn` (rock name) and `malestokk` (scale).
+- **Quaternary deposits**: NGU "Løsmasser" WFS N50 (1:50,000). Polygons with attribute `jordart` (deposit name).
+- **Structural lines (faults)**: NGU "Berggrunn" WFS `strukturlinje`. Lines with attribute `strukturtype` (fault, thrust, shear, other).
+
+All EPSG:25833. Tiled WFS fetch in 0.4° tiles (mirrors `buildings_fetch.py` pattern).
+
+### 9.2 Offline pipeline (`geology_fetch.py`)
+
+1. Tile-iterate the WGS-84 bbox, fetching each tile as GeoJSON, caching to `geology_cache/`.
+2. Deduplicate features by `id` across overlapping tiles.
+3. Reproject each feature to EPSG:25833 (Shapely + pyproj).
+4. Triangulate polygons with `mapbox-earcut` (handles holes).
+5. Sample DEM bilinearly at each vertex → per-vertex Z.
+6. Bin polygons per 4 km cell (same scheme as canopy/water).
+7. Emit binaries `bedrock.bin` (BRK1), `quaternary.bin` (QUA1), `faults.bin` (FLT1) and JSON sidecars `bedrock.json`, `quaternary.json`.
+
+### 9.3 Binary formats
+
+**`bedrock.bin` / `quaternary.bin`** (magic `BRK1` / `QUA1`):
+
+```
+char  magic[4]
+u32   ver = 1
+u32   nCells
+for each cell:
+  i32 kx, ky
+  f32 cx, cy
+  f32 czMin, czMax
+  f32 radius
+  u32 nPolys
+  for each poly:
+    u16 rockId; u16 pad
+    u32 nVerts; u32 nTris
+    f32 verts[nVerts][3]
+    u32 indices[nTris][3]
+```
+
+**`faults.bin`** (magic `FLT1`): identical layout to `osm.bin` but typed by fault category (0 fault, 1 thrust, 2 shear, 3 other).
+
+**Sidecar JSONs**: `{ "<rockId>": { "name": str, "color": "#rrggbb", "scale": "N50"|"N250" } }`.
+
+### 9.4 Renderer
+
+Three new layers added to `viewer.html`:
+
+- `bedrockGroup` — ground-conforming polygon mesh per cell. Custom shader, Z lifted by `+0.5 m × EXAG`. Per-vertex colour baked from the JSON lookup. `transparent=true`, `depthWrite=false`, `polygonOffset` to avoid z-fight with terrain.
+- `quatGroup` — same shader, `+0.7 m × EXAG` lift to sit above bedrock.
+- `faultsGroup` — `LineSegments`, lifted `+1.0 m × EXAG`, single colour `#e040c0`.
+
+### 9.5 HUD additions
+
+A collapsible **Geology** subpanel (`<details>`, closed by default):
+
+| Control | Range | Default | Effect |
+| --- | --- | --- | --- |
+| Bedrock checkbox | — | off | Toggle `bedrockGroup`. |
+| Quaternary checkbox | — | off | Toggle `quatGroup`. |
+| Faults checkbox | — | off | Toggle `faultsGroup`. |
+| Geology blend | 0–100% step 5% | 60% | Sets `uOpacity` on both polygon materials. |
+
+### 9.6 Click-to-identify
+
+- On left-click without drag: raycast against terrain → world (x, y).
+- AABB prefilter against polygon list, then ring-based point-in-polygon refine.
+- Floating panel near cursor shows colour swatch + rock/deposit name + scale tag.
+- Auto-hides after 8 s.
+- Inactive when no geology layer is visible.
+
+### 9.7 Aesthetics
+
+Colour palettes are derived from NGU's published symbology (e.g. granite `#ff6f6f`, gneiss `#f0a8c8`, peat `#7a5a3a`, marine clay `#a8c8e0`). Unknown rock types fall back to a deterministic pastel from `sha1(name)`.
+
+Hill-shading is intentionally minimal on the geology fills (`0.55 + 0.55 × N·L`) — strong shading would overwhelm the categorical colour read. Faults use saturated magenta to contrast against any underlying colour.
+
+---
+
 ## 8. Reimplementation checklist
 
 If you're building this in another stack (Bevy, Unity, Unreal, Godot,
