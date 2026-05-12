@@ -889,6 +889,134 @@ const faultMat = new THREE.LineBasicMaterial({ color: 0xe040c0, transparent: tru
 })();
 // ---------------- end faults layer -----------------
 
+// ---------------- click-to-identify geology -----------------
+const polyIndex = {
+  bedrock: { polys: null },
+  quat:    { polys: null },
+};
+
+async function _parseRings(url, magic) {
+  let buf;
+  try {
+    const r = await fetch(url);
+    if (!r.ok) return [];
+    buf = await r.arrayBuffer();
+  } catch { return []; }
+  const dv = new DataView(buf);
+  const tag = String.fromCharCode(dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3));
+  if (tag !== magic) return [];
+  let off = 4;
+  off += 4; // ver
+  const nCells = dv.getUint32(off, true); off += 4;
+  const polys = [];
+  for (let ci = 0; ci < nCells; ci++) {
+    off += 8;  // kx, ky
+    off += 8;  // cx, cy
+    off += 8;  // zmin, zmax
+    off += 4;  // radius
+    const nPolys = dv.getUint32(off, true); off += 4;
+    for (let pi = 0; pi < nPolys; pi++) {
+      const rockId = dv.getUint16(off, true); off += 4;
+      const nVerts = dv.getUint32(off, true); off += 4;
+      const nTris  = dv.getUint32(off, true); off += 4;
+      const verts = new Float32Array(buf, off, nVerts * 3); off += nVerts * 12;
+      off += nTris * 12;
+
+      let xmin = Infinity, ymin = Infinity, xmax = -Infinity, ymax = -Infinity;
+      const xs = [], ys = [];
+      for (let v = 0; v < nVerts; v++) {
+        const x = verts[v*3], y = verts[v*3+1];
+        xs.push(x); ys.push(y);
+        if (x < xmin) xmin = x; if (x > xmax) xmax = x;
+        if (y < ymin) ymin = y; if (y > ymax) ymax = y;
+      }
+      polys.push({ rockId, xmin, ymin, xmax, ymax, xs, ys });
+    }
+  }
+  return polys;
+}
+
+(async () => {
+  polyIndex.bedrock.polys = await _parseRings('bedrock.bin', 'BRK1');
+  polyIndex.quat.polys    = await _parseRings('quaternary.bin', 'QUA1');
+  console.log(`identify: ${polyIndex.bedrock.polys.length} bedrock, ${polyIndex.quat.polys.length} quat polygons`);
+})();
+
+function _pointInHull(px, py, xs, ys) {
+  let inside = false;
+  const n = xs.length;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const xi = xs[i], yi = ys[i], xj = xs[j], yj = ys[j];
+    const intersect = ((yi > py) !== (yj > py)) &&
+      (px < (xj - xi) * (py - yi) / (yj - yi + 1e-12) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+function _identify(px, py) {
+  const out = {};
+  for (const layerKey of ['bedrock', 'quat']) {
+    const layer = polyIndex[layerKey];
+    if (!layer.polys) continue;
+    for (const p of layer.polys) {
+      if (px < p.xmin || px > p.xmax || py < p.ymin || py > p.ymax) continue;
+      if (_pointInHull(px, py, p.xs, p.ys)) {
+        const entry = (layerKey === 'bedrock' ? bedrockLookup : quaternaryLookup)[String(p.rockId)];
+        if (entry) { out[layerKey] = entry; break; }
+      }
+    }
+  }
+  return out;
+}
+
+const idPanel = document.createElement('div');
+idPanel.id = 'id-panel';
+idPanel.style.cssText = 'position:fixed;display:none;background:rgba(0,0,0,0.78);color:#cdd;padding:8px 10px;border:1px solid #555;border-radius:6px;font:12px system-ui;pointer-events:none;z-index:9999;max-width:260px';
+document.body.appendChild(idPanel);
+
+let _idHideTimer = null;
+function showIdPanel(x, y, info) {
+  if (!info.bedrock && !info.quat) { idPanel.style.display = 'none'; return; }
+  const swatch = (hex) => `<span style="display:inline-block;width:10px;height:10px;background:${hex};border:1px solid #888;margin-right:4px;vertical-align:middle"></span>`;
+  let html = '';
+  if (info.bedrock) html += `<div>${swatch(info.bedrock.color)}<b>Bedrock:</b> ${info.bedrock.name} <span style="opacity:0.6">(${info.bedrock.scale})</span></div>`;
+  if (info.quat)    html += `<div>${swatch(info.quat.color)}<b>Quaternary:</b> ${info.quat.name} <span style="opacity:0.6">(${info.quat.scale})</span></div>`;
+  idPanel.innerHTML = html;
+  idPanel.style.left = `${x + 12}px`;
+  idPanel.style.top  = `${y + 12}px`;
+  idPanel.style.display = 'block';
+  if (_idHideTimer) clearTimeout(_idHideTimer);
+  _idHideTimer = setTimeout(() => { idPanel.style.display = 'none'; }, 8000);
+}
+
+let _downX = 0, _downY = 0, _downT = 0;
+renderer.domElement.addEventListener('pointerdown', (e) => {
+  if (e.button !== 0) return;
+  _downX = e.clientX; _downY = e.clientY; _downT = performance.now();
+});
+renderer.domElement.addEventListener('pointerup', (e) => {
+  if (e.button !== 0) return;
+  if (Math.abs(e.clientX - _downX) > 4 || Math.abs(e.clientY - _downY) > 4) return;
+  if (performance.now() - _downT > 500) return;
+  if (!bedrockGroup.visible && !quatGroup.visible) return;
+
+  const rect = renderer.domElement.getBoundingClientRect();
+  const ndc = new THREE.Vector2(
+    ((e.clientX - rect.left) / rect.width) * 2 - 1,
+    -((e.clientY - rect.top) / rect.height) * 2 + 1,
+  );
+  const ray = new THREE.Raycaster();
+  ray.setFromCamera(ndc, camera);
+  const hits = ray.intersectObjects(meshUsed, false);
+  if (!hits.length) return;
+  const wx = hits[0].point.x;
+  const wy = hits[0].point.y;
+  const info = _identify(wx, wy);
+  showIdPanel(e.clientX, e.clientY, info);
+});
+// ---------------- end click-to-identify -----------------
+
 // ---------------- canopy carpet -----------------
 const canopyVert = /* glsl */`
 uniform float uExag;
