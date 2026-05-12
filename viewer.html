@@ -1031,9 +1031,13 @@ const treeCells = [];
     const ab = await (await fetch('forest.bin')).arrayBuffer();
     const dv = new DataView(ab);
     const magic = String.fromCharCode(dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3));
-    if (magic !== 'TRE1') throw new Error('bad magic ' + magic);
+    if (magic !== 'TRE1' && magic !== 'TRE2') throw new Error('bad magic ' + magic);
+    const TRE2 = (magic === 'TRE2');
     const n = dv.getUint32(4, true);
-    const REC = 20;
+    // TRE1: 20 B (cx,cy,cz,h,sp,sj,cj,pad). TRE2: 24 B (adds 4 int8 corner-z deltas
+    // d00,d10,d01,d11 in 0.5 m units, used to bilinear-interp per-tree z and
+    // avoid horizontal "tree shelves" on steep slopes).
+    const REC = TRE2 ? 24 : 20;
     const dataOff = 8;
     const tmp = new DataView(ab, dataOff);
     // bin into 4 km cells
@@ -1088,6 +1092,11 @@ const treeCells = [];
         const sp  = tmp.getUint8(o + 16);
         const sj  = tmp.getUint8(o + 17);
         const cj  = tmp.getUint8(o + 18);
+        // TRE2 corner-z deltas (0.5 m units), int8 - or 0 if TRE1 (no deltas):
+        const d00 = TRE2 ? tmp.getInt8(o + 20) * 0.5 : 0;
+        const d10 = TRE2 ? tmp.getInt8(o + 21) * 0.5 : 0;
+        const d01 = TRE2 ? tmp.getInt8(o + 22) * 0.5 : 0;
+        const d11 = TRE2 ? tmp.getInt8(o + 23) * 0.5 : 0;
         const aspect = TREE_ASPECT[sp] || 0.4;
         const A = TREE_PAL[sp] || TREE_PAL[0];
         const B = TREE_PAL_DARK[sp] || TREE_PAL_DARK[0];
@@ -1116,6 +1125,17 @@ const treeCells = [];
           const offV = jh(seedIdx, 9993) * 0.45;
           const cx = cx0 + (u2 + offU) * QUAD_M;
           const cy = cy0 + (v2 + offV) * QUAD_M;
+          // Bilinear-interp per-tree z from corner deltas so trees follow the
+          // local slope inside the 48 m quad (eliminates horizontal "shelves"
+          // of trees on steep terrain). u,v in [0,1] across the quad.
+          // Clamp to [0,1] because per-quad rotation/offset can push trees
+          // slightly outside their own quad.
+          const fu = Math.max(0, Math.min(1, (u2 + offU) + 0.5));
+          const fv = Math.max(0, Math.min(1, (v2 + offV) + 0.5));
+          const dz = (d00 * (1 - fu) * (1 - fv))
+                   + (d10 *      fu  * (1 - fv))
+                   + (d01 * (1 - fu) *      fv )
+                   + (d11 *      fu  *      fv );
           // per-sub-tree size & rotation variation (deterministic)
           const rh1 = jh(seedIdx, 100 + s);
           const rh2 = jh(seedIdx, 200 + s);
@@ -1128,7 +1148,7 @@ const treeCells = [];
           const tShift = ((cj - 128) / 600.0) + rh2 * 0.06;
           iPos[wi*3+0] = cx;
           iPos[wi*3+1] = cy;
-          iPos[wi*3+2] = bz0 - BASE_SINK;
+          iPos[wi*3+2] = bz0 + dz - BASE_SINK;
           iSize[wi*2+0] = radius;
           iSize[wi*2+1] = height;
           iRot[wi] = (cj / 255.0 + rh3 * 0.5) * Math.PI * 2.0;

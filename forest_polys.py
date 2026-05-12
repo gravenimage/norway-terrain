@@ -290,6 +290,20 @@ def main() -> None:
     ty = (maxy - (tqi + 0.5) * CANOPY_RES_M).astype(np.float32)
     tz = sample_dem(tx, ty).astype(np.float32)
 
+    # --- Per-quad corner-height deltas (so JS scatter can interpolate per-tree z) ---
+    # Without this, every sub-tree inside a quad inherits the centre's z,
+    # which creates horizontal "shelves" of trees on steep slopes.
+    half = CANOPY_RES_M * 0.5
+    # corners: 00 = (-x, -y), 10 = (+x, -y), 01 = (-x, +y), 11 = (+x, +y)
+    z00 = sample_dem(tx - half, ty - half)
+    z10 = sample_dem(tx + half, ty - half)
+    z01 = sample_dem(tx - half, ty + half)
+    z11 = sample_dem(tx + half, ty + half)
+    # encode as int8 deltas with 0.5 m precision (range +/-63.5 m from quad centre)
+    def _enc(z):
+        return np.clip(np.round((z - tz) * 2.0), -127, 127).astype(np.int8)
+    d00, d10, d01, d11 = _enc(z00), _enc(z10), _enc(z01), _enc(z11)
+
     species = np.where(tz < 200, 0,
               np.where(tz < 400, 1,
               np.where(tz < 550, 2, 3))).astype(np.uint8)
@@ -298,10 +312,12 @@ def main() -> None:
     sj = (rng.random(n_trees) * 256).astype(np.uint8)
     cj = (rng.random(n_trees) * 256).astype(np.uint8)
 
+    # TRE2 record: 24 bytes (was 20). Adds 4 corner-height deltas (int8) at the end.
     rec_dt = np.dtype([
         ("cx", "<f4"), ("cy", "<f4"),
         ("cz", "<f4"), ("h",  "<f4"),
         ("sp", "u1"), ("sj", "u1"), ("cj", "u1"), ("pad", "u1"),
+        ("d00", "i1"), ("d10", "i1"), ("d01", "i1"), ("d11", "i1"),
     ])
     recs = np.zeros(n_trees, dtype=rec_dt)
     recs["cx"] = (tx - cx_off).astype(np.float32)
@@ -311,9 +327,11 @@ def main() -> None:
     recs["sp"] = species
     recs["sj"] = sj
     recs["cj"] = cj
+    recs["d00"] = d00; recs["d10"] = d10
+    recs["d01"] = d01; recs["d11"] = d11
 
     with open(OUT_FOREST, "wb") as f:
-        f.write(b"TRE1")
+        f.write(b"TRE2")
         f.write(struct.pack("<I", n_trees))
         f.write(recs.tobytes())
     print(f"  forest.bin: {OUT_FOREST.stat().st_size/1024/1024:.1f} MB ({n_trees:,} trees)")
