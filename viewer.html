@@ -1094,15 +1094,28 @@ const treeCells = [];
         for (let s = 0; s < K_TREES; s++){
           // Stratified jitter: divide quad into K cells, place one tree per cell
           // with a small in-cell offset. Guarantees uniform coverage.
+          // Then rotate + shift the whole sub-lattice by a per-quad random
+          // amount so adjacent quads don't form a global aligned grid
+          // (visible as stripes on steep slopes).
           const sub = K_TREES;
           const nx = Math.ceil(Math.sqrt(sub));
           const sx = s % nx, sy = (s / nx) | 0;
           const baseU = (sx + 0.5) / nx - 0.5;     // [-0.5, 0.5]
           const baseV = (sy + 0.5) / nx - 0.5;
-          const ru = jh(seedIdx, s * 2 + 1) * (0.5 / nx) * 0.9;
-          const rv = jh(seedIdx, s * 2 + 2) * (0.5 / nx) * 0.9;
-          const cx = cx0 + (baseU + ru) * QUAD_M;
-          const cy = cy0 + (baseV + rv) * QUAD_M;
+          const ru = jh(seedIdx, s * 2 + 1) * (0.5 / nx) * 0.95;
+          const rv = jh(seedIdx, s * 2 + 2) * (0.5 / nx) * 0.95;
+          let u = baseU + ru;
+          let v = baseV + rv;
+          // per-quad rotation of the sub-lattice (breaks global row alignment)
+          const theta = jh(seedIdx, 9991) * Math.PI;       // [-π, π]
+          const ct = Math.cos(theta), st = Math.sin(theta);
+          const u2 =  ct * u - st * v;
+          const v2 =  st * u + ct * v;
+          // per-quad sub-lattice shift (breaks shared phase across quads)
+          const offU = jh(seedIdx, 9992) * 0.45;            // ±0.45 of QUAD_M
+          const offV = jh(seedIdx, 9993) * 0.45;
+          const cx = cx0 + (u2 + offU) * QUAD_M;
+          const cy = cy0 + (v2 + offV) * QUAD_M;
           // per-sub-tree size & rotation variation (deterministic)
           const rh1 = jh(seedIdx, 100 + s);
           const rh2 = jh(seedIdx, 200 + s);
