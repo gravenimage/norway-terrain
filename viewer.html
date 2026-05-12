@@ -839,6 +839,48 @@ loadGeologyPolygons('quaternary.bin', 'QUA1', quatGroup, quatCells, quatMat,
   (j) => { quaternaryLookup = j; quatGroup._lookup = j; });
 // ---------------- end quaternary geology layer -----------------
 
+// ---------------- faults layer (FLT1) -----------------
+const faultsGroup = new THREE.Group();
+faultsGroup.visible = false;
+scene.add(faultsGroup);
+
+const faultMat = new THREE.LineBasicMaterial({ color: 0xe040c0, transparent: true, opacity: 0.95, depthWrite: false });
+
+(async () => {
+  let buf;
+  try {
+    const r = await fetch('faults.bin');
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    buf = await r.arrayBuffer();
+  } catch (e) { console.warn('faults.bin not loaded:', e.message); return; }
+  const dv = new DataView(buf);
+  const tag = String.fromCharCode(dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3));
+  if (tag !== 'FLT1') { console.warn('bad faults magic', tag); return; }
+  let off = 4;
+  const nGroups = dv.getUint32(off, true); off += 4;
+  let totalSegs = 0;
+  for (let g = 0; g < nGroups; g++) {
+    const typeIdx = dv.getUint8(off); off += 4;
+    const nVerts = dv.getUint32(off, true); off += 4;
+    const verts = new Float32Array(buf, off, nVerts * 3); off += nVerts * 12;
+    const positions = new Float32Array(verts.length);
+    for (let i = 0; i < nVerts; i++) {
+      positions[i*3]   = verts[i*3];
+      positions[i*3+1] = verts[i*3+1];
+      positions[i*3+2] = verts[i*3+2] * EXAG + 1.0 * EXAG;
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    const seg = new THREE.LineSegments(geo, faultMat);
+    seg.frustumCulled = false;
+    seg.renderOrder = 12;
+    faultsGroup.add(seg);
+    totalSegs += nVerts / 2;
+  }
+  console.log(`faults: ${totalSegs} segments`);
+})();
+// ---------------- end faults layer -----------------
+
 // ---------------- canopy carpet -----------------
 const canopyVert = /* glsl */`
 uniform float uExag;
