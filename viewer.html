@@ -122,12 +122,13 @@ controls.addEventListener('change', () => {
 addEventListener('beforeunload', _saveCameraNow);
 
 
-// water plane
+// water plane (held slightly above sea-level terrain to avoid z-fighting offshore)
 const water = new THREE.Mesh(
   new THREE.PlaneGeometry(ROOT_SIZE*1.5, ROOT_SIZE*1.5),
   new THREE.MeshBasicMaterial({ color: 0x123048 })
 );
-water.position.z = -0.5;
+water.position.z = 1.0;
+water.renderOrder = -1;
 scene.add(water);
 
 const SUN = new THREE.Vector3(-0.4, -0.6, 0.85).normalize();
@@ -918,6 +919,9 @@ const waterMaterial = new THREE.ShaderMaterial({
   `,
   side: THREE.FrontSide,
   extensions: { derivatives: true },
+  polygonOffset: true,
+  polygonOffsetFactor: -1,
+  polygonOffsetUnits: -4,
 });
 
 const waterCells = [];
