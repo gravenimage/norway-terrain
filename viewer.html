@@ -38,6 +38,22 @@
     <label>Geology blend: <input type="range" id="r-geo-blend" min="0" max="1" step="0.05" value="0.6"></label>
     <span id="r-geo-blend-val">0.60</span>
   </details>
+  <details id="contour-panel" style="margin-top:6px;border-top:1px solid #444;padding-top:4px;">
+    <summary style="cursor:pointer;font-weight:600;">Contours</summary>
+    <label><input type="checkbox" id="cb-contours"> Show contour lines</label><br>
+    <label>Interval (m):
+      <select id="contour-interval">
+        <option value="10">10</option>
+        <option value="25">25</option>
+        <option value="50">50</option>
+        <option value="100" selected>100</option>
+        <option value="200">200</option>
+        <option value="500">500</option>
+      </select>
+    </label><br>
+    <label>Opacity: <input type="range" id="r-contour-opacity" min="0" max="1" step="0.05" value="0.75"></label>
+    <span id="r-contour-opacity-val">0.75</span>
+  </details>
 </div>
 
 <script type="importmap">
@@ -1249,6 +1265,13 @@ uniform float uQuatShow;
 uniform float uQuatPalN;
 uniform vec4 uGeoBBox;        // xMin, yMin, xMax-xMin, yMax-yMin (centred world)
 uniform float uGeoOpacity;
+// ----- contour uniforms (shared across all terrain materials) -----
+uniform float uContourShow;       // 0 or 1
+uniform float uContourInterval;   // metres (real world)
+uniform float uContourBoldEvery;  // e.g. 5 -> every 5th line is an index contour
+uniform vec3  uContourColor;
+uniform vec3  uContourBoldColor;
+uniform float uContourOpacity;
 varying vec3 vWorld;
 varying vec2 vUv;
 varying float vH;
@@ -1329,6 +1352,28 @@ void main(){
     vec4 g = sampleGeo(uQuatTex, uQuatPalette, uQuatPalN, vWorld.xy);
     col = mix(col, g.rgb * (0.40 + 0.70 * diff), g.a * uGeoOpacity);
   }
+  // --- contour lines (procedural iso-lines on the height field) ---
+  if (uContourShow > 0.5) {
+    float interval = max(uContourInterval, 0.001);
+    float zReal = sampleH(vUv) / max(uExag, 0.001);
+    float f = zReal / interval;
+    float w = max(fwidth(f), 1e-5);
+    float dist = abs(fract(f + 0.5) - 0.5);
+    // anti-aliased line ~1.5 px wide
+    float lineA = 1.0 - smoothstep(0.0, w * 0.75, dist);
+    // density fade: kill lines when they'd merge into a wash
+    float densityFade = 1.0 - smoothstep(0.4, 0.7, w);
+    lineA *= densityFade;
+    // bold "index" contour every Nth line
+    float every = max(uContourBoldEvery, 1.0);
+    float isBold = step(mod(floor(f + 0.5), every), 0.5);
+    float boldA = (1.0 - smoothstep(0.0, w * 1.6, dist)) * densityFade * isBold;
+    // smooth sea-level mask (avoids hard branch around fwidth)
+    float landMask = smoothstep(0.5, 2.0, zReal);
+    vec3 lineCol = mix(uContourColor, uContourBoldColor, isBold);
+    float a = max(lineA * 0.55, boldA * 0.9) * uContourOpacity * landMask;
+    col = mix(col, lineCol, a);
+  }
   // distance fog
   float fogF = smoothstep(uFogNear, uFogFar, length(vWorld - cameraPosition));
   col = mix(col, uFogColor, fogF);
@@ -1353,6 +1398,16 @@ const geoUniforms = {
   uQuatPalN:    { value: 1.0 },
   uGeoBBox:     { value: new THREE.Vector4(0, 0, 1, 1) },
   uGeoOpacity:  { value: 0.6 },
+};
+
+// Shared contour uniforms — same sharing pattern as geology.
+const contourUniforms = {
+  uContourShow:      { value: 0.0 },
+  uContourInterval:  { value: 100.0 },
+  uContourBoldEvery: { value: 5.0 },
+  uContourColor:     { value: new THREE.Color(0x2a1a08) },  // thin: dark brown
+  uContourBoldColor: { value: new THREE.Color(0x140803) },  // bold: near-black
+  uContourOpacity:   { value: 0.75 },
 };
 
 function makeMaterial(){
@@ -1384,9 +1439,17 @@ function makeMaterial(){
       uQuatPalN:    geoUniforms.uQuatPalN,
       uGeoBBox:     geoUniforms.uGeoBBox,
       uGeoOpacity:  geoUniforms.uGeoOpacity,
+      // contour overlay (shared-by-reference):
+      uContourShow:      contourUniforms.uContourShow,
+      uContourInterval:  contourUniforms.uContourInterval,
+      uContourBoldEvery: contourUniforms.uContourBoldEvery,
+      uContourColor:     contourUniforms.uContourColor,
+      uContourBoldColor: contourUniforms.uContourBoldColor,
+      uContourOpacity:   contourUniforms.uContourOpacity,
     },
     vertexShader: vert,
     fragmentShader: frag,
+    extensions: { derivatives: true },
   });
 }
 
@@ -2022,6 +2085,21 @@ blendInput.addEventListener('input', e => {
   const v = parseFloat(e.target.value);
   geoUniforms.uGeoOpacity.value = v;
   blendVal.textContent = v.toFixed(2);
+});
+
+// ---- contour controls ----
+document.getElementById('cb-contours').addEventListener('change', e => {
+  contourUniforms.uContourShow.value = e.target.checked ? 1.0 : 0.0;
+});
+document.getElementById('contour-interval').addEventListener('change', e => {
+  contourUniforms.uContourInterval.value = parseFloat(e.target.value);
+});
+const contourOpEl = document.getElementById('r-contour-opacity');
+const contourOpVal = document.getElementById('r-contour-opacity-val');
+contourOpEl.addEventListener('input', e => {
+  const v = parseFloat(e.target.value);
+  contourUniforms.uContourOpacity.value = v;
+  contourOpVal.textContent = v.toFixed(2);
 });
 
 addEventListener('resize', () => {
