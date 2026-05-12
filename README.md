@@ -24,7 +24,7 @@ uv run serve.py
 
 That's it. The script will:
 1. Reconstitute the two big data files from `data_parts/` if needed (a few seconds, only happens the first time).
-2. Start a local web server on <http://localhost:8000/>.
+2. Start a local web server on <http://localhost:8000/> (or the next free port if 8000 is busy — the actual URL is printed on startup).
 3. Open the viewer in your default browser automatically.
 
 Press **Ctrl+C** in the terminal to stop the server.
