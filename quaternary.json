@@ -1,0 +1,97 @@
+{
+  "0": {
+    "name": "Morenemateriale, sammenhengende dekke, stedvis med stor mektighet",
+    "color": "#7ab080",
+    "scale": "250000"
+  },
+  "1": {
+    "name": "Morenemateriale, usammenhengende eller tynt dekke over berggrunnen",
+    "color": "#b4c09d",
+    "scale": "250000"
+  },
+  "2": {
+    "name": "Bart fjell",
+    "color": "#cccccc",
+    "scale": "250000"
+  },
+  "3": {
+    "name": "Fyllmasse (antropogent materiale)",
+    "color": "#c1b195",
+    "scale": "250000"
+  },
+  "4": {
+    "name": "Elve- og bekkeavsetning (Fluvial avsetning)",
+    "color": "#70709f",
+    "scale": "250000"
+  },
+  "5": {
+    "name": "Tynt dekke av organisk materiale over berggrunn",
+    "color": "#6d71cd",
+    "scale": "250000"
+  },
+  "6": {
+    "name": "Torv og myr",
+    "color": "#7a5a3a",
+    "scale": "250000"
+  },
+  "7": {
+    "name": "Skredmateriale, sammenhengende dekke",
+    "color": "#ba6ca0",
+    "scale": "250000"
+  },
+  "8": {
+    "name": "Randmorene/randmorenesone",
+    "color": "#d9cb83",
+    "scale": "250000"
+  },
+  "9": {
+    "name": "Skredmateriale, usammenhengende eller tynt dekke",
+    "color": "#af9285",
+    "scale": "250000"
+  },
+  "10": {
+    "name": "Breelvavsetning (Glasifluvial avsetning)",
+    "color": "#de9471",
+    "scale": "250000"
+  },
+  "11": {
+    "name": "Hav-, fjord- og strandavsetning, usammenhengende eller tynt dekke over berggrunnen",
+    "color": "#e1b1b3",
+    "scale": "250000"
+  },
+  "12": {
+    "name": "Marin strandavsetning, sammenhengende dekke",
+    "color": "#d1d9d5",
+    "scale": "250000"
+  },
+  "13": {
+    "name": "Forvitringsmateriale, usammenhengende eller tynt dekke over berggrunnen",
+    "color": "#df8c7e",
+    "scale": "250000"
+  },
+  "14": {
+    "name": "Hav- og fjordavsetning, sammenhengende dekke, stedvis med stor mektighet",
+    "color": "#6faed4",
+    "scale": "250000"
+  },
+  "15": {
+    "name": "Vindavsetning (Eolisk avsetning)",
+    "color": "#cd9bc9",
+    "scale": "250000"
+  },
+  "16": {
+    "name": "Avsmeltningsmorene (Ablasjonsmorene)",
+    "color": "#abce6e",
+    "scale": "250000"
+  },
+  "17": {
+    "name": "Forvitringsmateriale, ikke inndelt etter mektighet",
+    "color": "#e0b78c",
+    "scale": "250000"
+  },
+  "18": {
+    "name": "Innsjøavsetning (Lakustrin avsetning)",
+    "color": "#d5d0ac",
+    "scale": "250000"
+  }
+}
