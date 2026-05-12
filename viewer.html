@@ -1567,8 +1567,25 @@ function _identify(px, py) {
 
 const idPanel = document.createElement('div');
 idPanel.id = 'id-panel';
-idPanel.style.cssText = 'position:fixed;display:none;background:rgba(0,0,0,0.78);color:#cdd;padding:8px 10px;border:1px solid #555;border-radius:6px;font:12px system-ui;pointer-events:none;z-index:9999;max-width:260px';
+idPanel.style.cssText = 'position:fixed;display:none;background:rgba(0,0,0,0.78);color:#cdd;padding:8px 22px 8px 10px;border:1px solid #555;border-radius:6px;font:12px system-ui;z-index:9999;max-width:260px';
 document.body.appendChild(idPanel);
+
+const idClose = document.createElement('button');
+idClose.type = 'button';
+idClose.setAttribute('aria-label', 'Close');
+idClose.textContent = '×';
+idClose.style.cssText = 'position:absolute;top:1px;right:3px;width:14px;height:14px;padding:0;line-height:12px;font-size:14px;background:transparent;color:#aaa;border:none;cursor:pointer;font-family:system-ui';
+idClose.addEventListener('mouseenter', () => { idClose.style.color = '#fff'; });
+idClose.addEventListener('mouseleave', () => { idClose.style.color = '#aaa'; });
+idClose.addEventListener('click', (e) => {
+  e.stopPropagation();
+  idPanel.style.display = 'none';
+  if (_idHideTimer) { clearTimeout(_idHideTimer); _idHideTimer = null; }
+});
+idPanel.appendChild(idClose);
+
+const idContent = document.createElement('div');
+idPanel.appendChild(idContent);
 
 let _idHideTimer = null;
 function showIdPanel(x, y, info) {
@@ -1577,7 +1594,7 @@ function showIdPanel(x, y, info) {
   let html = '';
   if (info.bedrock) html += `<div>${swatch(info.bedrock.color)}<b>Bedrock:</b> ${info.bedrock.name} <span style="opacity:0.6">(${info.bedrock.scale})</span></div>`;
   if (info.quat)    html += `<div>${swatch(info.quat.color)}<b>Quaternary:</b> ${info.quat.name} <span style="opacity:0.6">(${info.quat.scale})</span></div>`;
-  idPanel.innerHTML = html;
+  idContent.innerHTML = html;
   idPanel.style.left = `${x + 12}px`;
   idPanel.style.top  = `${y + 12}px`;
   idPanel.style.display = 'block';
