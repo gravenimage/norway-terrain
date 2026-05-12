@@ -89,6 +89,39 @@ controls.maxDistance = ROOT_SIZE*2;
 controls.maxPolarAngle = Math.PI*0.49;
 controls.zoomSpeed = 1.6;
 
+// ---------- persist camera + target across reloads ----------
+const CAM_STORAGE_KEY = 'norwayterrain.cam.v1';
+(function restoreCamera(){
+  try {
+    const raw = localStorage.getItem(CAM_STORAGE_KEY);
+    if (!raw) return;
+    const s = JSON.parse(raw);
+    if (!s || !Array.isArray(s.p) || !Array.isArray(s.t)) return;
+    if (s.p.length !== 3 || s.t.length !== 3) return;
+    if (!s.p.every(Number.isFinite) || !s.t.every(Number.isFinite)) return;
+    camera.position.fromArray(s.p);
+    controls.target.fromArray(s.t);
+    camera.updateMatrixWorld();
+    controls.update();
+  } catch (e) { /* ignore corrupt state */ }
+})();
+
+let _camSaveTimer = 0;
+function _saveCameraNow(){
+  try {
+    localStorage.setItem(CAM_STORAGE_KEY, JSON.stringify({
+      p: camera.position.toArray(),
+      t: controls.target.toArray(),
+    }));
+  } catch (e) { /* quota / private mode — ignore */ }
+}
+controls.addEventListener('change', () => {
+  if (_camSaveTimer) return;
+  _camSaveTimer = setTimeout(() => { _camSaveTimer = 0; _saveCameraNow(); }, 250);
+});
+addEventListener('beforeunload', _saveCameraNow);
+
+
 // water plane
 const water = new THREE.Mesh(
   new THREE.PlaneGeometry(ROOT_SIZE*1.5, ROOT_SIZE*1.5),
