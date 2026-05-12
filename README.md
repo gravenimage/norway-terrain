@@ -80,8 +80,8 @@ at that point.
 | `buildings.bin` | OSM building footprints + heights (BLD1 binary). |
 | `osm.bin` | Major roads + kommune boundaries (OSM2 binary). |
 | `water.bin` | Inland water-body mesh (WATR binary). |
-| `bedrock.bin` + `bedrock.json` | NGU bedrock polygons + lookup table (BRK1 binary). |
-| `quaternary.bin` + `quaternary.json` | NGU Quaternary deposits + lookup table (QUA1 binary). |
+| `bedrock_raster.bin` + `bedrock_palette.json` | NGU bedrock raster overlay + palette (BRR1 binary, 50 m px). |
+| `quaternary_raster.bin` + `quaternary_palette.json` | NGU Quaternary deposits raster overlay + palette (QRR1 binary, 50 m px). |
 | `faults.bin` | NGU structural fault lines (FLT1 binary). |
 | `*.py` | Offline data-pipeline scripts (you don't need to run these). |
 | `SPEC.md` | Full feature & data-source specification (read this if you want to reimplement the renderer in another stack). |

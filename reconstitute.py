@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parent
 PARTS_DIR = ROOT / "data_parts"
 
 # Output filename -> ordered list of part filenames (sorted lexicographically).
-TARGETS = ["rogaland_10m.tif", "canopy.bin", "bedrock.bin", "quaternary.bin"]
+TARGETS = ["rogaland_10m.tif", "canopy.bin"]
 
 
 def run() -> None:

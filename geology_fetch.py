@@ -20,19 +20,16 @@ from shapely import wkb
 from shapely.geometry import LineString, MultiLineString, MultiPolygon, Polygon, shape
 from shapely.ops import transform as shp_transform
 
-from geology import lookup, polygons, wfs, writers
+from geology import lookup, polygons, rasterize, wfs, writers
 
 ROOT = Path(__file__).resolve().parent
 CACHE = ROOT / "geology_cache"
 DEM = ROOT / "rogaland_10m.tif"
 CELL_SIZE_M = 4000.0
-# Max edge length for the refined geology triangles. Polygons (especially
-# bedrock at 1:250k) are originally km-scale, so their flat-triangulated
-# interiors sit below DEM peaks. Subdividing to ~200 m keeps Z-drape close
-# to the underlying terrain without blowing up file size.
-MAX_TRI_EDGE_M = 200.0
-# Cap iterations to limit worst-case growth on very large polygons.
-MAX_SUBDIVIDE_ITERS = 4
+# Geology overlay raster: pixel size in metres. The overlay is sampled by the
+# terrain fragment shader, so it never causes terrain pokethrough regardless
+# of resolution; this controls only visual sharpness of class boundaries.
+GEOLOGY_RASTER_M = 50.0
 
 # WGS84 bbox for Rogaland (matches existing scripts)
 BBOX_WGS84 = (4.0, 58.0, 7.5, 60.5)
@@ -429,45 +426,41 @@ def _build_polygon_layer(
     out_bin: Path,
     out_json: Path,
     magic: bytes,
-    dem,
-    dem_tf,
-    dem_w,
-    dem_h,
-    cx_off,
-    cy_off,
+    abs_bbox: tuple[float, float, float, float],
+    cx_off: float,
+    cy_off: float,
 ) -> None:
+    """Rasterize the polygon layer to a uint16 indexed grid for shader sampling.
+
+    Polygons are in absolute EPSG:25833 coords; the raster grid is built in
+    those coords too. We then shift the stored bbox into centred world
+    coords (the frame the viewer / terrain shader uses) when writing the
+    header, so the shader can map vWorld.xy to UV directly.
+    """
     lk = lookup.Lookup(palette=palette)
     if records and isinstance(records[0], dict):
         prepared = _features_to_prepared(records, name_fields, scale_field="malestokk", lk=lk)  # type: ignore[arg-type]
     else:
         prepared = _records_to_prepared(records, name_fields, scale_field="egnetMålestokk", lk=lk)  # type: ignore[arg-type]
     print(f"[{label}] prepared polys: {len(prepared)}")
-    cells = polygons.bin_polygons(prepared, cell_size=CELL_SIZE_M)
 
-    out_cells: dict[tuple[int, int], list[tuple]] = {}
-    for k, items in cells.items():
-        bucket = []
-        for p in items:
-            try:
-                v2d, tris = polygons.triangulate(p.rings)
-                v2d, tris = polygons.subdivide_triangles(
-                    v2d, tris, MAX_TRI_EDGE_M, max_iters=MAX_SUBDIVIDE_ITERS
-                )
-            except Exception:
-                continue
-            zs = _drape_z(v2d.astype(np.float64), dem, dem_tf, dem_w, dem_h)
-            v3d = np.empty((len(v2d), 3), dtype=np.float32)
-            v3d[:, 0] = v2d[:, 0] - cx_off
-            v3d[:, 1] = v2d[:, 1] - cy_off
-            v3d[:, 2] = zs
-            bucket.append((p, v3d, tris))
-        if bucket:
-            out_cells[k] = bucket
-
-    writers.write_polygons(out_bin, magic=magic, cells=out_cells, cell_size=CELL_SIZE_M)
-    lk.write(out_json)
+    grid, snapped_abs, (w, h) = rasterize.rasterize_polygons(
+        prepared, bbox=abs_bbox, resolution=GEOLOGY_RASTER_M
+    )
+    centred_bbox = (
+        snapped_abs[0] - cx_off,
+        snapped_abs[1] - cy_off,
+        snapped_abs[2] - cx_off,
+        snapped_abs[3] - cy_off,
+    )
+    rasterize.write_raster(out_bin, magic=magic, grid=grid, bbox=centred_bbox)
+    rasterize.write_palette(out_json, lk)
     sz_mb = out_bin.stat().st_size / 1e6
-    print(f"[{label}] wrote {out_bin.name} ({sz_mb:.1f} MB) + {out_json.name} ({len(lk._entries)} types)")
+    covered = int((grid != 0).sum())
+    print(
+        f"[{label}] wrote {out_bin.name} ({w}x{h}={w*h:,} px, {sz_mb:.1f} MB, "
+        f"{100.0*covered/(w*h):.1f}% covered) + {out_json.name} ({len(lk._entries)} types)"
+    )
 
 
 def _build_fault_layer(records: list[FeatureRecord] | list[dict], dem, dem_tf, dem_w, dem_h, cx_off, cy_off) -> None:
@@ -521,18 +514,19 @@ def main() -> None:
 
     bedrock_records, quat_records, fault_records = _load_download_records()
 
+    # DEM bbox in absolute EPSG:25833 metres. We rasterize over this and
+    # store the bbox shifted to centred world coords (the viewer frame).
+    abs_bbox = (float(b.left), float(b.bottom), float(b.right), float(b.top))
+
     _build_polygon_layer(
         "bedrock",
         bedrock_records,
         name_fields=["tegnforkla", "hovedberg_", "hovedbergart", "bergartnavn", "name"],
         palette=BEDROCK_PALETTE,
-        out_bin=ROOT / "bedrock.bin",
-        out_json=ROOT / "bedrock.json",
-        magic=b"BRK1",
-        dem=dem,
-        dem_tf=dem_tf,
-        dem_w=dem_w,
-        dem_h=dem_h,
+        out_bin=ROOT / "bedrock_raster.bin",
+        out_json=ROOT / "bedrock_palette.json",
+        magic=b"BRR1",
+        abs_bbox=abs_bbox,
         cx_off=cx_off,
         cy_off=cy_off,
     )
@@ -541,13 +535,10 @@ def main() -> None:
         quat_records,
         name_fields=["løsmassetypeNavn", "jordart", "navn", "name"],
         palette=QUATERNARY_PALETTE,
-        out_bin=ROOT / "quaternary.bin",
-        out_json=ROOT / "quaternary.json",
-        magic=b"QUA1",
-        dem=dem,
-        dem_tf=dem_tf,
-        dem_w=dem_w,
-        dem_h=dem_h,
+        out_bin=ROOT / "quaternary_raster.bin",
+        out_json=ROOT / "quaternary_palette.json",
+        magic=b"QRR1",
+        abs_bbox=abs_bbox,
         cx_off=cx_off,
         cy_off=cy_off,
     )

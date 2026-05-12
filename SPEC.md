@@ -628,46 +628,39 @@ All EPSG:25833. Tiled WFS fetch in 0.4° tiles (mirrors `buildings_fetch.py` pat
 
 ### 9.2 Offline pipeline (`geology_fetch.py`)
 
-1. Tile-iterate the WGS-84 bbox, fetching each tile as GeoJSON, caching to `geology_cache/`.
-2. Deduplicate features by `id` across overlapping tiles.
-3. Reproject each feature to EPSG:25833 (Shapely + pyproj).
-4. Triangulate polygons with `mapbox-earcut` (handles holes).
-5. Sample DEM bilinearly at each vertex → per-vertex Z.
-6. Bin polygons per 4 km cell (same scheme as canopy/water).
-7. Emit binaries `bedrock.bin` (BRK1), `quaternary.bin` (QUA1), `faults.bin` (FLT1) and JSON sidecars `bedrock.json`, `quaternary.json`.
+1. Download NGU's national N250 bedrock + regional Quaternary archives (cached in `geology_cache/`).
+2. Parse the shapefiles / GeoPackage; reproject features from WGS-84 to EPSG:25833.
+3. Assign each polygon a 1-based class id via a `lookup.Lookup` (palette-aware).
+4. **Rasterize** bedrock + Quaternary polygons onto a regular grid (50 m px) covering the DEM bbox using `rasterio.features.rasterize` (uint16 class ids, 0 = nodata).
+5. Faults are kept as line geometry: sampled bilinearly against the DEM for Z drape, then written as line segments.
+6. Emit binaries `bedrock_raster.bin` (BRR1), `quaternary_raster.bin` (QRR1), `faults.bin` (FLT1) and JSON palette sidecars `bedrock_palette.json`, `quaternary_palette.json`.
 
 ### 9.3 Binary formats
 
-**`bedrock.bin` / `quaternary.bin`** (magic `BRK1` / `QUA1`):
+**`bedrock_raster.bin` / `quaternary_raster.bin`** (magic `BRR1` / `QRR1`):
 
 ```
 char  magic[4]
 u32   ver = 1
-u32   nCells
-for each cell:
-  i32 kx, ky
-  f32 cx, cy
-  f32 czMin, czMax
-  f32 radius
-  u32 nPolys
-  for each poly:
-    u16 rockId; u16 pad
-    u32 nVerts; u32 nTris
-    f32 verts[nVerts][3]
-    u32 indices[nTris][3]
+u32   width
+u32   height
+f32   xMin, yMin, xMax, yMax   // centred world coords
+u16   ids[height][width]       // row 0 = south (yMin), row-major
 ```
 
 **`faults.bin`** (magic `FLT1`): identical layout to `osm.bin` but typed by fault category (0 fault, 1 thrust, 2 shear, 3 other).
 
-**Sidecar JSONs**: `{ "<rockId>": { "name": str, "color": "#rrggbb", "scale": "N50"|"N250" } }`.
+**Palette JSONs**: `{ "<1-based id>": { "name": str, "color": "#rrggbb", "scale": "N50"|"N250" } }`.
 
 ### 9.4 Renderer
 
-Three new layers added to `viewer.html`:
+Bedrock and Quaternary are **not separate meshes** — they are sampled by the existing terrain fragment shader as 2D rasters projected onto the DEM. This eliminates geology pokethrough by construction: the colour is applied to whichever DEM fragment falls under each raster cell, so the visual surface is always the DEM.
 
-- `bedrockGroup` — ground-conforming polygon mesh per cell. Custom shader, Z lifted by `+0.5 m × EXAG`. Per-vertex colour baked from the JSON lookup. `transparent=true`, `depthWrite=false`, `polygonOffset` to avoid z-fight with terrain.
-- `quatGroup` — same shader, `+0.7 m × EXAG` lift to sit above bedrock.
-- `faultsGroup` — `LineSegments`, lifted `+1.0 m × EXAG`, single colour `#e040c0`.
+The terrain material gets shared uniforms (`uBedTex`, `uBedPalette`, `uBedShow`, `uBedPalN`, `uQuatTex`, `uQuatPalette`, `uQuatShow`, `uQuatPalN`, `uGeoBBox`, `uGeoOpacity`) wired by reference into every tile material, so a single toggle drives all tiles.
+
+In-shader sampling: world (x, y) → raster UV → RG-packed uint16 (low byte in R, high in G) → palette LUT (N×1 RGBA) → `mix(terrainCol, geoCol, opacity)`.
+
+`faultsGroup` remains a `LineSegments` group lifted `+1.0 m × EXAG`, single colour `#e040c0`.
 
 ### 9.5 HUD additions
 
@@ -675,15 +668,15 @@ A collapsible **Geology** subpanel (`<details>`, closed by default):
 
 | Control | Range | Default | Effect |
 | --- | --- | --- | --- |
-| Bedrock checkbox | — | off | Toggle `bedrockGroup`. |
-| Quaternary checkbox | — | off | Toggle `quatGroup`. |
+| Bedrock checkbox | — | off | Sets `uBedShow` 0/1 on the shared terrain uniforms. |
+| Quaternary checkbox | — | off | Sets `uQuatShow` 0/1. |
 | Faults checkbox | — | off | Toggle `faultsGroup`. |
-| Geology blend | 0–100% step 5% | 60% | Sets `uOpacity` on both polygon materials. |
+| Geology blend | 0–100% step 5% | 60% | Sets `uGeoOpacity` (shared across both layers). |
 
 ### 9.6 Click-to-identify
 
 - On left-click without drag: raycast against terrain → world (x, y).
-- AABB prefilter against polygon list, then ring-based point-in-polygon refine.
+- Sample the in-memory `Uint16Array` raster directly: `ids[row*w + col]` → class id → palette lookup.
 - Floating panel near cursor shows colour swatch + rock/deposit name + scale tag.
 - Auto-hides after 8 s.
 - Inactive when no geology layer is visible.
@@ -692,7 +685,7 @@ A collapsible **Geology** subpanel (`<details>`, closed by default):
 
 Colour palettes are derived from NGU's published symbology (e.g. granite `#ff6f6f`, gneiss `#f0a8c8`, peat `#7a5a3a`, marine clay `#a8c8e0`). Unknown rock types fall back to a deterministic pastel from `sha1(name)`.
 
-Hill-shading is intentionally minimal on the geology fills (`0.55 + 0.55 × N·L`) — strong shading would overwhelm the categorical colour read. Faults use saturated magenta to contrast against any underlying colour.
+The overlay inherits the terrain's hill-shading (`0.40 + 0.70 × N·L`), so it conforms naturally to slope lighting without needing a second pass. Faults use saturated magenta to contrast against any underlying colour.
 
 ---
 
