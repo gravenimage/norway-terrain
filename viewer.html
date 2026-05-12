@@ -823,6 +823,22 @@ loadGeologyPolygons('bedrock.bin', 'BRK1', bedrockGroup, bedrockCells, bedrockMa
   (j) => { bedrockLookup = j; bedrockGroup._lookup = j; });
 // ---------------- end bedrock geology layer -----------------
 
+// ---------------- quaternary geology layer (QUA1) -----------------
+const quatGroup = new THREE.Group();
+quatGroup.visible = false;
+scene.add(quatGroup);
+const quatCells = [];
+let quaternaryLookup = {};
+
+const quatMat = bedrockMat.clone();
+quatMat.uniforms = THREE.UniformsUtils.clone(bedrockMat.uniforms);
+quatMat.uniforms.uLift.value = 0.7;
+
+quatGroup._lookup = {};
+loadGeologyPolygons('quaternary.bin', 'QUA1', quatGroup, quatCells, quatMat,
+  (j) => { quaternaryLookup = j; quatGroup._lookup = j; });
+// ---------------- end quaternary geology layer -----------------
+
 // ---------------- canopy carpet -----------------
 const canopyVert = /* glsl */`
 uniform float uExag;
