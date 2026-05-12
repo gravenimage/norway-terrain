@@ -1763,46 +1763,32 @@ compassScene.add(_compassLight);
 
 const compassArrow = new THREE.Group();
 
-// Base disc (so the arrow visibly lies on a horizontal plane)
-const _baseDisc = new THREE.Mesh(
-  new THREE.CircleGeometry(1.25, 48),
-  new THREE.MeshBasicMaterial({ color: 0x0c1322, transparent: true, opacity: 0.55, depthWrite: false })
-);
-compassArrow.add(_baseDisc);
-const _baseRing = new THREE.Mesh(
-  new THREE.RingGeometry(1.18, 1.28, 64),
-  new THREE.MeshBasicMaterial({ color: 0xb0c4d8, transparent: true, opacity: 0.85, depthWrite: false })
-);
-_baseRing.position.z = 0.001;
-compassArrow.add(_baseRing);
+// Flat extruded arrow shape in the XY plane (points +Y = north).
+const _arrowShape = new THREE.Shape();
+_arrowShape.moveTo(-0.12, -0.9);
+_arrowShape.lineTo( 0.12, -0.9);
+_arrowShape.lineTo( 0.12,  0.4);
+_arrowShape.lineTo( 0.36,  0.4);
+_arrowShape.lineTo( 0.00,  1.05);
+_arrowShape.lineTo(-0.36,  0.4);
+_arrowShape.lineTo(-0.12,  0.4);
+_arrowShape.lineTo(-0.12, -0.9);
+const _arrowGeom = new THREE.ExtrudeGeometry(_arrowShape, {
+  depth: 0.10,
+  bevelEnabled: true,
+  bevelThickness: 0.02,
+  bevelSize: 0.015,
+  bevelSegments: 2,
+  curveSegments: 1,
+});
+// Extrude goes along +Z by default — lift it so its underside sits at z=0
+const _arrowMat = new THREE.MeshStandardMaterial({
+  color: 0xffd21a, roughness: 0.45, metalness: 0.15,
+});
+const _arrowMesh = new THREE.Mesh(_arrowGeom, _arrowMat);
+compassArrow.add(_arrowMesh);
 
-// Shaft (cylinder is along +Y by default after rotation; CylinderGeometry default is along +Y)
-const _shaft = new THREE.Mesh(
-  new THREE.CylinderGeometry(0.09, 0.09, 1.1, 18),
-  new THREE.MeshStandardMaterial({ color: 0xd33b3b, roughness: 0.55, metalness: 0.1 })
-);
-// CylinderGeometry's axis is Y, so it already points along +Y. Lay it flat in XY.
-_shaft.position.set(0, -0.05, 0.09);
-compassArrow.add(_shaft);
-
-// Head (cone along +Y by default)
-const _head = new THREE.Mesh(
-  new THREE.ConeGeometry(0.26, 0.5, 22),
-  new THREE.MeshStandardMaterial({ color: 0xd33b3b, roughness: 0.55, metalness: 0.1 })
-);
-_head.position.set(0, 0.75, 0.09);
-compassArrow.add(_head);
-
-// Tail fin (points south, darker)
-const _tail = new THREE.Mesh(
-  new THREE.ConeGeometry(0.20, 0.35, 22),
-  new THREE.MeshStandardMaterial({ color: 0x2a3a55, roughness: 0.65 })
-);
-_tail.position.set(0, -0.78, 0.09);
-_tail.rotation.x = Math.PI; // point -Y
-compassArrow.add(_tail);
-
-// "N" label as a sprite at the tip
+// "N" label as a sprite at the tip, in the same depth space (so the arrow can occlude it).
 const _nCanvas = document.createElement('canvas');
 _nCanvas.width = 96; _nCanvas.height = 96;
 {
@@ -1819,9 +1805,12 @@ _nCanvas.width = 96; _nCanvas.height = 96;
 const _nTex = new THREE.CanvasTexture(_nCanvas);
 _nTex.colorSpace = THREE.SRGBColorSpace;
 _nTex.anisotropy = 4;
-const _nSprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: _nTex, depthTest: false, transparent: true }));
-_nSprite.scale.set(0.55, 0.55, 1);
-_nSprite.position.set(0, 1.42, 0.09);
+const _nSprite = new THREE.Sprite(new THREE.SpriteMaterial({
+  map: _nTex, depthTest: true, depthWrite: false, transparent: true,
+}));
+_nSprite.scale.set(0.34, 0.34, 1);
+// Sit the label at the tip, centred in the arrow's thickness so the arrow body can occlude it.
+_nSprite.position.set(0, 1.32, 0.05);
 compassArrow.add(_nSprite);
 
 compassScene.add(compassArrow);
