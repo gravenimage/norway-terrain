@@ -64,7 +64,7 @@ const CENTER_Y = (SRC.yMin + SRC.yMax) / 2;
 
 THREE.Object3D.DEFAULT_UP.set(0,0,1);
 
-const renderer = new THREE.WebGLRenderer({ antialias:true, powerPreference:'high-performance' });
+const renderer = new THREE.WebGLRenderer({ antialias:true, powerPreference:'high-performance', logarithmicDepthBuffer: true });
 renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
 renderer.setSize(window.innerWidth, window.innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -76,7 +76,7 @@ const FOG_NEAR = ROOT_SIZE*0.5, FOG_FAR = ROOT_SIZE*1.6;
 const FOG_COLOR = new THREE.Color(0x0c1322);
 scene.fog = new THREE.Fog(0x0c1322, FOG_NEAR, FOG_FAR);
 
-const camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 150, ROOT_SIZE*4);
+const camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 50, ROOT_SIZE*4);
 camera.up.set(0,0,1);
 camera.position.set(0, -120000, 90000);
 
@@ -139,18 +139,26 @@ const overlayUniforms = {
   uOffset: { value: 12.0 },
 };
 const overlayVert = /* glsl */`
+#include <common>
+#include <logdepthbuf_pars_vertex>
 uniform float uExag;
 uniform float uOffset;
 void main(){
   vec3 p = position;
   p.z = max(p.z, 0.0) * uExag + uOffset;
   gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
+  #include <logdepthbuf_vertex>
 }
 `;
 const overlayFrag = /* glsl */`
 precision highp float;
+#include <common>
+#include <logdepthbuf_pars_fragment>
 uniform vec3 uColor;
-void main(){ gl_FragColor = vec4(uColor, 1.0); }
+void main(){
+  #include <logdepthbuf_fragment>
+  gl_FragColor = vec4(uColor, 1.0);
+}
 `;
 function makeLineMaterial(color){
   return new THREE.ShaderMaterial({
@@ -283,6 +291,8 @@ function makeHouseGeometry(){
 }
 
 const buildingVert = /* glsl */`
+#include <common>
+#include <logdepthbuf_pars_vertex>
 attribute float aPart;
 attribute vec3 iPos;
 attribute vec3 iSize;
@@ -317,9 +327,12 @@ void main(){
   vColor  = (aPart < 0.5) ? iWallColor : iRoofColor;
   vWorld  = p;
   gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
+  #include <logdepthbuf_vertex>
 }`;
 const buildingFrag = /* glsl */`
 precision highp float;
+#include <common>
+#include <logdepthbuf_pars_fragment>
 varying vec3 vNormal;
 varying vec3 vColor;
 varying vec3 vWorld;
@@ -330,6 +343,7 @@ uniform float uFogFar;
 uniform float uFadeNear;
 uniform float uFadeFar;
 void main(){
+  #include <logdepthbuf_fragment>
   vec3 N = normalize(vNormal);
   float diff = clamp(dot(N, normalize(uSun)), 0.0, 1.0);
   float wrap = 0.30 + 0.85 * diff;
@@ -557,6 +571,8 @@ function makeTreeGeometry(){
 }
 
 const treeVert = /* glsl */`
+#include <common>
+#include <logdepthbuf_pars_vertex>
 attribute float aPart;
 attribute vec3 iPos;
 attribute vec2 iSize;        // x = base radius (m), y = height (m)
@@ -595,9 +611,12 @@ void main(){
   else                  vColor = vec3(0.27, 0.18, 0.10); // trunk
   vWorld = p;
   gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
+  #include <logdepthbuf_vertex>
 }`;
 const treeFrag = /* glsl */`
 precision highp float;
+#include <common>
+#include <logdepthbuf_pars_fragment>
 varying vec3 vNormal;
 varying vec3 vColor;
 varying vec3 vWorld;
@@ -608,6 +627,7 @@ uniform float uFogFar;
 uniform float uFadeNear;
 uniform float uFadeFar;
 void main(){
+  #include <logdepthbuf_fragment>
   vec3 N = normalize(vNormal);
   float diff = clamp(dot(N, normalize(uSun)), 0.0, 1.0);
   float wrap = 0.35 + 0.80 * diff;
@@ -639,6 +659,8 @@ function makeTreeBillboardGeometry(){
   return g;
 }
 const treeBbVert = /* glsl */`
+#include <common>
+#include <logdepthbuf_pars_vertex>
 attribute vec2 aQuad;
 attribute vec3 iPos;
 attribute vec2 iSize;
@@ -669,9 +691,12 @@ void main(){
   vWorld = world;
   vQuad = aQuad;
   gl_Position = projectionMatrix * viewMatrix * vec4(world, 1.0);
+  #include <logdepthbuf_vertex>
 }`;
 const treeBbFrag = /* glsl */`
 precision highp float;
+#include <common>
+#include <logdepthbuf_pars_fragment>
 varying vec3 vColor;
 varying vec3 vWorld;
 varying vec2 vQuad;
@@ -682,6 +707,7 @@ uniform float uFogFar;
 uniform float uFadeNear;
 uniform float uFadeFar;
 void main(){
+  #include <logdepthbuf_fragment>
   // soft conical alpha mask: opaque in centre, fading at outer edge
   float u = abs(vQuad.x);
   float taper = 1.0 - vQuad.y * 0.80; // matches geometry taper
@@ -733,6 +759,8 @@ const treeBbMaterial = new THREE.ShaderMaterial({
 
 // ---------------- canopy carpet -----------------
 const canopyVert = /* glsl */`
+#include <common>
+#include <logdepthbuf_pars_vertex>
 uniform float uExag;
 uniform float uExtraLift;
 varying vec3 vWorld;
@@ -753,10 +781,13 @@ void main(){
   vec4 vp = viewMatrix * vec4(world, 1.0);
   vDist = -vp.z;
   gl_Position = projectionMatrix * vp;
+  #include <logdepthbuf_vertex>
 }`;
 
 const canopyFrag = /* glsl */`
 precision highp float;
+#include <common>
+#include <logdepthbuf_pars_fragment>
 varying vec3 vWorld;
 varying float vBaseZ;
 varying float vDist;
@@ -785,6 +816,7 @@ float fbm(vec2 p){
 }
 
 void main(){
+  #include <logdepthbuf_fragment>
   vec3 N = normalize(cross(dFdx(vWorld), dFdy(vWorld)));
   float n1 = fbm(vWorld.xy * 0.013);
   float n2 = fbm(vWorld.xy * 0.045 + 17.0);
@@ -889,6 +921,8 @@ const waterUniforms = {
 const waterMaterial = new THREE.ShaderMaterial({
   uniforms: waterUniforms,
   vertexShader: `
+    #include <common>
+    #include <logdepthbuf_pars_vertex>
     uniform float uExag;
     varying vec3 vWorld;
     varying float vDepthFade;
@@ -899,13 +933,17 @@ const waterMaterial = new THREE.ShaderMaterial({
       vWorld = wp.xyz;
       vDepthFade = clamp(p.z / 200.0, 0.0, 1.0);
       gl_Position = projectionMatrix * viewMatrix * wp;
+      #include <logdepthbuf_vertex>
     }
   `,
   fragmentShader: `
+    #include <common>
+    #include <logdepthbuf_pars_fragment>
     uniform vec3 uSun;
     varying vec3 vWorld;
     varying float vDepthFade;
     void main(){
+      #include <logdepthbuf_fragment>
       vec3 dx = dFdx(vWorld);
       vec3 dy = dFdy(vWorld);
       vec3 n = normalize(cross(dx, dy));
@@ -920,8 +958,8 @@ const waterMaterial = new THREE.ShaderMaterial({
   side: THREE.FrontSide,
   extensions: { derivatives: true },
   polygonOffset: true,
-  polygonOffsetFactor: -2,
-  polygonOffsetUnits: -100,
+  polygonOffsetFactor: -1,
+  polygonOffsetUnits: -4,
 });
 
 const waterCells = [];
@@ -1159,6 +1197,8 @@ let plane = new THREE.PlaneGeometry(1, 1, SEG, SEG);
 
 // ---------- shader ----------
 const vert = /* glsl */`
+#include <common>
+#include <logdepthbuf_pars_vertex>
 uniform sampler2D uHeight;
 uniform vec2 uOriginXY;
 uniform float uTileSize;
@@ -1179,11 +1219,14 @@ void main(){
   vWorld = vec3(wxy, h);
   vH = h;
   gl_Position = projectionMatrix * viewMatrix * vec4(vWorld, 1.0);
+  #include <logdepthbuf_vertex>
 }
 `;
 
 const frag = /* glsl */`
 precision highp float;
+#include <common>
+#include <logdepthbuf_pars_fragment>
 uniform sampler2D uHeight;
 uniform float uTileSize;
 uniform float uExag;
@@ -1239,6 +1282,7 @@ vec3 ramp(float zReal){
   return c4;
 }
 void main(){
+  #include <logdepthbuf_fragment>
   // identify the current quad cell of the geometry tessellation
   vec2 q  = floor(vUv * uSeg) / uSeg;
   float d = 1.0 / uSeg;
@@ -1314,8 +1358,8 @@ const geoUniforms = {
 function makeMaterial(){
   return new THREE.ShaderMaterial({
     polygonOffset: true,
-    polygonOffsetFactor: 2,
-    polygonOffsetUnits: 50,
+    polygonOffsetFactor: 1,
+    polygonOffsetUnits: 1,
     uniforms: {
       uHeight:   { value: null },
       uOriginXY: { value: new THREE.Vector2() },
