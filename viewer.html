@@ -30,6 +30,14 @@
   <label>building visibility (km) <input id="bldRange" type="range" min="3" max="60" step="1" value="22"> <span id="bldRangev">22</span></label>
   <label>canopy range (km) <input id="canopyRange" type="range" min="3" max="50" step="1" value="30"> <span id="canopyRangev">30</span></label>
   <label>canopy LOD switch (km) <input id="canopyLod" type="range" min="0.3" max="6" step="0.1" value="1.5"> <span id="canopyLodv">1.5</span></label>
+  <details id="geo-panel" style="margin-top:6px;border-top:1px solid #444;padding-top:4px;">
+    <summary style="cursor:pointer;font-weight:600;">Geology</summary>
+    <label><input type="checkbox" id="cb-bedrock"> Bedrock</label><br>
+    <label><input type="checkbox" id="cb-quat"> Quaternary</label><br>
+    <label><input type="checkbox" id="cb-faults"> Faults</label><br>
+    <label>Geology blend: <input type="range" id="r-geo-blend" min="0" max="1" step="0.05" value="0.6"></label>
+    <span id="r-geo-blend-val">0.60</span>
+  </details>
 </div>
 
 <script type="importmap">
@@ -1670,6 +1678,24 @@ canopyLodEl.oninput = () => {
   canopyUniforms.uFadeNear.value = CANOPY_LOD_LO;
   canopyUniforms.uFadeFar.value  = CANOPY_LOD_HI;
 };
+
+document.getElementById('cb-bedrock').addEventListener('change', e => {
+  bedrockGroup.visible = e.target.checked;
+});
+document.getElementById('cb-quat').addEventListener('change', e => {
+  quatGroup.visible = e.target.checked;
+});
+document.getElementById('cb-faults').addEventListener('change', e => {
+  faultsGroup.visible = e.target.checked;
+});
+const blendInput = document.getElementById('r-geo-blend');
+const blendVal = document.getElementById('r-geo-blend-val');
+blendInput.addEventListener('input', e => {
+  const v = parseFloat(e.target.value);
+  bedrockMat.uniforms.uOpacity.value = v;
+  quatMat.uniforms.uOpacity.value    = v;
+  blendVal.textContent = v.toFixed(2);
+});
 
 addEventListener('resize', () => {
   camera.aspect = innerWidth/innerHeight;
