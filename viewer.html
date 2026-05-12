@@ -1314,7 +1314,6 @@ const bedrockMat = new THREE.ShaderMaterial({
     }
   `,
   fragmentShader: `
-    #extension GL_OES_standard_derivatives : enable
     varying vec3 vColor;
     varying float vFog;
     uniform float uOpacity, uFogNear, uFogFar;
