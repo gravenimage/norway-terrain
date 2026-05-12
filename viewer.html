@@ -68,6 +68,7 @@
 <script type="module">
 import * as THREE from 'three';
 import { MapControls } from 'three/addons/controls/MapControls.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
 const meta = await (await fetch('tiles/meta.json')).json();
 const ROOT_X = meta.rootX, ROOT_Y = meta.rootY, ROOT_SIZE = meta.rootSize;
@@ -483,6 +484,462 @@ const buildingCells = []; // { mesh, cx, cy, radius }
   } catch (e) {
     console.warn('buildings.bin not loaded:', e);
   }
+})();
+
+// ---------- Civic amenities (pitches, parks, playgrounds, props) ----------
+// Polygon area features (per type id, MUST match amenities_fetch.py).
+const AMENITY_AREA_COLORS = [
+  [0.32, 0.55, 0.24], // 0 PITCH_GRASS  - football green
+  [0.55, 0.35, 0.22], // 1 PITCH_HARD   - clay / asphalt
+  [0.78, 0.36, 0.22], // 2 TRACK        - terracotta running track
+  [0.86, 0.74, 0.34], // 3 PLAYGROUND   - sandy yellow
+  [0.30, 0.52, 0.24], // 4 PARK         - green
+  [0.32, 0.50, 0.22], // 5 GARDEN
+  [0.30, 0.62, 0.85], // 6 POOL         - cyan
+  [0.74, 0.66, 0.40], // 7 SCHOOL_YARD
+  [0.36, 0.46, 0.30], // 8 CEMETERY
+  [0.52, 0.66, 0.28], // 9 GOLF
+  [0.58, 0.58, 0.58], //10 STADIUM
+];
+
+const amenitiesGroup = new THREE.Group();
+scene.add(amenitiesGroup);
+const propsGroup = new THREE.Group();
+amenitiesGroup.add(propsGroup);
+
+const amenityAreaUniforms = {
+  uExag:      { value: 1.4 },
+  uExtraLift: { value: 1.2 },
+  uSun:       { value: SUN.clone() },
+  uFogNear:   { value: FOG_NEAR },
+  uFogFar:    { value: FOG_FAR },
+  uFogColor:  { value: FOG_COLOR },
+  uFadeNear:  { value: 18000 },
+  uFadeFar:   { value: 22000 },
+};
+const amenityAreaMaterial = new THREE.ShaderMaterial({
+  uniforms: amenityAreaUniforms,
+  vertexShader: /* glsl */`
+    #include <common>
+    #include <logdepthbuf_pars_vertex>
+    attribute vec3 aColor;
+    uniform float uExag;
+    uniform float uExtraLift;
+    varying vec3 vColor;
+    varying vec3 vNormal;
+    varying vec3 vWorld;
+    void main(){
+      vec3 p = position;
+      p.z = p.z * uExag + uExtraLift;
+      vNormal = normalize(normal);
+      vColor = aColor;
+      vWorld = p;
+      gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
+      #include <logdepthbuf_vertex>
+    }`,
+  fragmentShader: /* glsl */`
+    precision highp float;
+    #include <common>
+    #include <logdepthbuf_pars_fragment>
+    varying vec3 vNormal;
+    varying vec3 vColor;
+    varying vec3 vWorld;
+    uniform vec3 uSun;
+    uniform vec3 uFogColor;
+    uniform float uFogNear, uFogFar;
+    uniform float uFadeNear, uFadeFar;
+    void main(){
+      #include <logdepthbuf_fragment>
+      vec3 N = normalize(vNormal);
+      float diff = clamp(dot(N, normalize(uSun)), 0.0, 1.0);
+      float wrap = 0.55 + 0.55 * diff;
+      vec3 col = vColor * wrap;
+      float dist = length(vWorld - cameraPosition);
+      float fogF = smoothstep(uFogNear, uFogFar, dist);
+      col = mix(col, uFogColor, fogF);
+      float alpha = 1.0 - smoothstep(uFadeNear, uFadeFar, dist);
+      if (alpha < 0.01) discard;
+      gl_FragColor = vec4(col, alpha);
+    }`,
+  transparent: true,
+  depthWrite: true,
+  polygonOffset: true,
+  polygonOffsetFactor: -1,
+  polygonOffsetUnits: -4,
+});
+
+// Toon-shaded prop material (instanced, per-vertex color attribute).
+const amenityPropUniforms = {
+  uExag:     { value: 1.4 },
+  uSun:      { value: SUN.clone() },
+  uFogNear:  { value: FOG_NEAR },
+  uFogFar:   { value: FOG_FAR },
+  uFogColor: { value: FOG_COLOR },
+  uFadeNear: { value: 3500 },
+  uFadeFar:  { value: 5000 },
+};
+const amenityPropMaterial = new THREE.ShaderMaterial({
+  uniforms: amenityPropUniforms,
+  vertexShader: /* glsl */`
+    #include <common>
+    #include <logdepthbuf_pars_vertex>
+    attribute vec3 color;
+    attribute vec3 iPos;
+    attribute float iRot;
+    attribute float iScale;
+    uniform float uExag;
+    varying vec3 vColor;
+    varying vec3 vNormal;
+    varying vec3 vWorld;
+    void main(){
+      vec3 p = position * iScale;
+      float c = cos(iRot), s = sin(iRot);
+      vec2 r = vec2(c*p.x - s*p.y, s*p.x + c*p.y);
+      p.x = r.x; p.y = r.y;
+      p.x += iPos.x;
+      p.y += iPos.y;
+      p.z += iPos.z * uExag + 0.05;
+      vec3 N = normal;
+      vec2 nr = vec2(c*N.x - s*N.y, s*N.x + c*N.y);
+      vNormal = normalize(vec3(nr, N.z));
+      vColor = color;
+      vWorld = p;
+      gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
+      #include <logdepthbuf_vertex>
+    }`,
+  fragmentShader: /* glsl */`
+    precision highp float;
+    #include <common>
+    #include <logdepthbuf_pars_fragment>
+    varying vec3 vNormal;
+    varying vec3 vColor;
+    varying vec3 vWorld;
+    uniform vec3 uSun, uFogColor;
+    uniform float uFogNear, uFogFar, uFadeNear, uFadeFar;
+    void main(){
+      #include <logdepthbuf_fragment>
+      vec3 N = normalize(vNormal);
+      float d = clamp(dot(N, normalize(uSun)), 0.0, 1.0);
+      // cartoonish 3-band toon
+      float band = d > 0.65 ? 1.0 : (d > 0.30 ? 0.78 : 0.55);
+      vec3 col = vColor * band;
+      float dist = length(vWorld - cameraPosition);
+      float fogF = smoothstep(uFogNear, uFogFar, dist);
+      col = mix(col, uFogColor, fogF);
+      float alpha = 1.0 - smoothstep(uFadeNear, uFadeFar, dist);
+      if (alpha < 0.01) discard;
+      gl_FragColor = vec4(col, alpha);
+    }`,
+  transparent: true,
+  depthWrite: true,
+});
+
+function _propBox(w, l, h, ox, oy, oz, color){
+  const g = new THREE.BoxGeometry(w, l, h);
+  g.translate(ox, oy, oz + h * 0.5);
+  const n = g.attributes.position.count;
+  const c = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++){ c[i*3]=color[0]; c[i*3+1]=color[1]; c[i*3+2]=color[2]; }
+  g.setAttribute('color', new THREE.BufferAttribute(c, 3));
+  return g;
+}
+function _propCyl(r, h, ox, oy, oz, color, radial=8){
+  const g = new THREE.CylinderGeometry(r, r, h, radial);
+  g.rotateX(Math.PI / 2); // Y-up → Z-up
+  g.translate(ox, oy, oz + h * 0.5);
+  const n = g.attributes.position.count;
+  const c = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++){ c[i*3]=color[0]; c[i*3+1]=color[1]; c[i*3+2]=color[2]; }
+  g.setAttribute('color', new THREE.BufferAttribute(c, 3));
+  return g;
+}
+function _propSphere(r, ox, oy, oz, color){
+  const g = new THREE.SphereGeometry(r, 8, 6);
+  g.translate(ox, oy, oz);
+  const n = g.attributes.position.count;
+  const c = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++){ c[i*3]=color[0]; c[i*3+1]=color[1]; c[i*3+2]=color[2]; }
+  g.setAttribute('color', new THREE.BufferAttribute(c, 3));
+  return g;
+}
+
+const _WOOD = [0.55, 0.35, 0.20];
+const _DARK = [0.28, 0.18, 0.10];
+const _METAL = [0.55, 0.55, 0.58];
+const _STONE = [0.58, 0.56, 0.52];
+const _SAND = [0.86, 0.76, 0.50];
+const _RED = [0.78, 0.22, 0.20];
+const _YEL = [0.92, 0.78, 0.20];
+const _BLU = [0.25, 0.42, 0.78];
+const _WHT = [0.92, 0.92, 0.92];
+
+function buildBenchGeom(){
+  return mergeGeometries([
+    _propBox(1.8, 0.35, 0.06, 0, 0, 0.42, _WOOD),
+    _propBox(1.8, 0.06, 0.40, 0, -0.14, 0.48, _WOOD),
+    _propBox(0.08, 0.35, 0.42, -0.85, 0, 0, _DARK),
+    _propBox(0.08, 0.35, 0.42,  0.85, 0, 0, _DARK),
+  ], false);
+}
+function buildPicnicTableGeom(){
+  return mergeGeometries([
+    _propBox(2.0, 0.9, 0.06, 0, 0, 0.74, _WOOD),
+    _propBox(2.0, 0.30, 0.05, 0, -0.7, 0.42, _WOOD),
+    _propBox(2.0, 0.30, 0.05, 0,  0.7, 0.42, _WOOD),
+    _propBox(0.08, 1.8, 0.74, -0.9, 0, 0, _DARK),
+    _propBox(0.08, 1.8, 0.74,  0.9, 0, 0, _DARK),
+  ], false);
+}
+function buildShelterGeom(){
+  return mergeGeometries([
+    _propCyl(0.07, 2.2, -1.4, -0.9, 0, _DARK),
+    _propCyl(0.07, 2.2,  1.4, -0.9, 0, _DARK),
+    _propCyl(0.07, 2.2, -1.4,  0.9, 0, _DARK),
+    _propCyl(0.07, 2.2,  1.4,  0.9, 0, _DARK),
+    _propBox(3.2, 2.2, 0.12, 0, 0, 2.2, [0.45, 0.28, 0.18]),
+    _propBox(2.6, 0.30, 0.04, 0, -0.7, 0.42, _WOOD),
+  ], false);
+}
+function buildArtworkGeom(){
+  return mergeGeometries([
+    _propBox(0.6, 0.6, 0.3, 0, 0, 0, _STONE),
+    _propCyl(0.18, 2.0, 0, 0, 0.3, _METAL, 12),
+    _propSphere(0.32, 0, 0, 2.5, _METAL),
+  ], false);
+}
+function buildMemorialGeom(){
+  return mergeGeometries([
+    _propBox(1.0, 0.4, 0.15, 0, 0, 0, _STONE),
+    _propBox(0.8, 0.18, 1.2, 0, 0, 0.15, _STONE),
+  ], false);
+}
+function buildLighthouseGeom(){
+  return mergeGeometries([
+    _propCyl(1.4, 4.5, 0, 0, 0, _WHT, 14),
+    _propCyl(1.55, 0.4, 0, 0, 4.5, _RED, 14),
+    _propCyl(1.1, 1.4, 0, 0, 4.9, _WHT, 12),
+    _propCyl(1.25, 0.4, 0, 0, 6.3, _RED, 12),
+    _propSphere(0.7, 0, 0, 6.8, _RED),
+  ], false);
+}
+function buildSwingGeom(){
+  return mergeGeometries([
+    _propCyl(0.06, 2.5, -1.2, 0, 0, _METAL),
+    _propCyl(0.06, 2.5,  1.2, 0, 0, _METAL),
+    _propBox(2.6, 0.10, 0.10, 0, 0, 2.45, _METAL),
+    _propBox(0.40, 0.18, 0.05, -0.6, 0, 0.5, _RED),
+    _propBox(0.40, 0.18, 0.05,  0.6, 0, 0.5, _BLU),
+    _propBox(0.02, 0.02, 1.9, -0.6, -0.07, 0.5, _DARK),
+    _propBox(0.02, 0.02, 1.9, -0.6,  0.07, 0.5, _DARK),
+    _propBox(0.02, 0.02, 1.9,  0.6, -0.07, 0.5, _DARK),
+    _propBox(0.02, 0.02, 1.9,  0.6,  0.07, 0.5, _DARK),
+  ], false);
+}
+function buildSlideGeom(){
+  return mergeGeometries([
+    _propBox(1.2, 1.2, 1.6, 0, 0.6, 0, _WOOD),
+    _propBox(0.9, 2.4, 0.10, 0, -0.6, 0.4, _RED),
+    _propCyl(0.04, 1.6, -0.5, 1.0, 0, _DARK, 6),
+    _propCyl(0.04, 1.6,  0.5, 1.0, 0, _DARK, 6),
+  ], false);
+}
+function buildRoundaboutGeom(){
+  return mergeGeometries([
+    _propCyl(1.4, 0.18, 0, 0, 0, _RED, 16),
+    _propCyl(0.08, 0.6, 0, 0, 0.18, _METAL, 8),
+  ], false);
+}
+function buildClimbingFrameGeom(){
+  const parts = [];
+  for (const [x,y] of [[-1,-1],[1,-1],[-1,1],[1,1]]) parts.push(_propCyl(0.05, 2.0, x, y, 0, _METAL, 6));
+  parts.push(_propBox(2.0, 0.05, 0.05, 0, -1, 2.0, _METAL));
+  parts.push(_propBox(2.0, 0.05, 0.05, 0,  1, 2.0, _METAL));
+  parts.push(_propBox(0.05, 2.0, 0.05, -1, 0, 2.0, _METAL));
+  parts.push(_propBox(0.05, 2.0, 0.05,  1, 0, 2.0, _METAL));
+  parts.push(_propBox(2.0, 0.04, 0.04, 0, 0, 1.0, _METAL));
+  parts.push(_propBox(0.04, 2.0, 0.04, 0, 0, 1.0, _METAL));
+  return mergeGeometries(parts, false);
+}
+function buildSandpitGeom(){
+  return mergeGeometries([
+    _propBox(3.0, 3.0, 0.12, 0, 0, 0, _SAND),
+    _propBox(3.0, 0.10, 0.18, 0, -1.5, 0, _WOOD),
+    _propBox(3.0, 0.10, 0.18, 0,  1.5, 0, _WOOD),
+    _propBox(0.10, 3.0, 0.18, -1.5, 0, 0, _WOOD),
+    _propBox(0.10, 3.0, 0.18,  1.5, 0, 0, _WOOD),
+  ], false);
+}
+function buildSeesawGeom(){
+  return mergeGeometries([
+    _propCyl(0.10, 0.6, 0, 0, 0, _DARK, 8),
+    _propBox(2.4, 0.20, 0.08, 0, 0, 0.60, _WOOD),
+    _propBox(0.20, 0.20, 0.10, -1.0, 0, 0.68, _RED),
+    _propBox(0.20, 0.20, 0.10,  1.0, 0, 0.68, _BLU),
+  ], false);
+}
+function buildSpringyGeom(){
+  return mergeGeometries([
+    _propCyl(0.06, 0.4, 0, 0, 0, _METAL, 6),
+    _propBox(0.6, 0.25, 0.50, 0, 0, 0.4, _YEL),
+    _propSphere(0.10, 0, -0.20, 0.85, _RED),
+  ], false);
+}
+function buildPgOtherGeom(){
+  return mergeGeometries([
+    _propBox(0.4, 0.4, 0.4, 0, 0, 0, _YEL),
+    _propCyl(0.05, 0.8, 0, 0, 0.4, _METAL, 6),
+  ], false);
+}
+
+// Point type ids (MUST match amenities_fetch.py).
+const PROP_BUILDERS = [
+  buildBenchGeom,         //  0 BENCH
+  buildPicnicTableGeom,   //  1 PICNIC_TABLE
+  buildShelterGeom,       //  2 SHELTER
+  buildArtworkGeom,       //  3 ARTWORK
+  buildMemorialGeom,      //  4 MEMORIAL
+  buildLighthouseGeom,    //  5 LIGHTHOUSE
+  buildSwingGeom,         //  6 PG_SWING
+  buildSlideGeom,         //  7 PG_SLIDE
+  buildRoundaboutGeom,    //  8 PG_ROUNDABOUT
+  buildClimbingFrameGeom, //  9 PG_CLIMBINGFRAME
+  buildSandpitGeom,       // 10 PG_SANDPIT
+  buildSeesawGeom,        // 11 PG_SEESAW
+  buildSpringyGeom,       // 12 PG_SPRINGY
+  buildPgOtherGeom,       // 13 PG_OTHER
+];
+
+function _amHash(x, y){
+  let h = (Math.floor(x * 31.7) ^ Math.floor(y * 19.3)) >>> 0;
+  h = ((h * 0x27d4eb2d) ^ (h >>> 15)) >>> 0;
+  return (h & 0xffff) / 65535;
+}
+
+(async () => {
+  let ab;
+  try { ab = await (await fetch('amenities.bin')).arrayBuffer(); }
+  catch (e) { console.warn('amenities.bin not loaded:', e); return; }
+  if (ab.byteLength < 8) { console.warn('amenities.bin too small'); return; }
+  const dv = new DataView(ab);
+  const magic = String.fromCharCode(dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3));
+  if (magic !== 'AMN1'){ console.warn('amenities.bin bad magic ' + magic); return; }
+
+  // ---- AREAS ----
+  const nAreas = dv.getUint32(4, true);
+  let off = 8;
+  const areasByType = new Map();
+  for (let i = 0; i < nAreas; i++){
+    const tid = dv.getUint16(off, true); off += 2;
+    const nv  = dv.getUint16(off, true); off += 2;
+    /* baseZ */ dv.getFloat32(off, true); off += 4;
+    const positions = new Float32Array(nv * 3);
+    const ring2d = new Array(nv);
+    for (let v = 0; v < nv; v++){
+      const x = dv.getFloat32(off,     true);
+      const y = dv.getFloat32(off + 4, true);
+      const z = dv.getFloat32(off + 8, true);
+      off += 12;
+      positions[v*3+0] = x;
+      positions[v*3+1] = y;
+      positions[v*3+2] = z;
+      ring2d[v] = new THREE.Vector2(x, y);
+    }
+    let tris;
+    try {
+      tris = THREE.ShapeUtils.triangulateShape(ring2d, []);
+    } catch (e) { continue; }
+    if (!tris || !tris.length) continue;
+    let arr = areasByType.get(tid);
+    if (!arr) { arr = []; areasByType.set(tid, arr); }
+    arr.push({ positions, tris });
+  }
+
+  // Render order: big background areas first, sporting features painted on top.
+  const RENDER_ORDER = [4, 8, 5, 7, 9, 10, 3, 6, 0, 1, 2];
+  for (let r = 0; r < RENDER_ORDER.length; r++){
+    const tid = RENDER_ORDER[r];
+    const list = areasByType.get(tid);
+    if (!list || !list.length) continue;
+    let totalV = 0, totalI = 0;
+    for (const it of list){ totalV += it.positions.length / 3; totalI += it.tris.length * 3; }
+    const positions = new Float32Array(totalV * 3);
+    const colors    = new Float32Array(totalV * 3);
+    const indices   = (totalV > 65535) ? new Uint32Array(totalI) : new Uint16Array(totalI);
+    const col = AMENITY_AREA_COLORS[tid] || [0.5, 0.5, 0.5];
+    let vOff = 0, iOff = 0;
+    for (const it of list){
+      const baseV = vOff;
+      const pn = it.positions.length / 3;
+      positions.set(it.positions, vOff * 3);
+      for (let v = 0; v < pn; v++){
+        colors[(vOff+v)*3+0] = col[0];
+        colors[(vOff+v)*3+1] = col[1];
+        colors[(vOff+v)*3+2] = col[2];
+      }
+      vOff += pn;
+      for (const t of it.tris){
+        indices[iOff++] = baseV + t[0];
+        indices[iOff++] = baseV + t[1];
+        indices[iOff++] = baseV + t[2];
+      }
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    g.setAttribute('aColor',   new THREE.BufferAttribute(colors, 3));
+    g.setIndex(new THREE.BufferAttribute(indices, 1));
+    g.computeVertexNormals();
+    const mesh = new THREE.Mesh(g, amenityAreaMaterial);
+    mesh.renderOrder = r;       // smaller r drawn first
+    mesh.frustumCulled = false;
+    amenitiesGroup.add(mesh);
+  }
+
+  // ---- POINTS ----
+  const nPoints = dv.getUint32(off, true); off += 4;
+  const buckets = new Array(PROP_BUILDERS.length);
+  for (let i = 0; i < PROP_BUILDERS.length; i++) buckets[i] = [];
+  for (let i = 0; i < nPoints; i++){
+    const tid = dv.getUint16(off, true);
+    const x = dv.getFloat32(off + 4, true);
+    const y = dv.getFloat32(off + 8, true);
+    const z = dv.getFloat32(off + 12, true);
+    off += 16;
+    if (tid >= 0 && tid < buckets.length) buckets[tid].push(x, y, z);
+  }
+  let totalProps = 0;
+  for (let tid = 0; tid < PROP_BUILDERS.length; tid++){
+    const arr = buckets[tid];
+    const m = arr.length / 3;
+    if (!m) continue;
+    const geom = PROP_BUILDERS[tid]();
+    const ig = new THREE.InstancedBufferGeometry();
+    ig.setAttribute('position', geom.getAttribute('position'));
+    ig.setAttribute('normal',   geom.getAttribute('normal'));
+    ig.setAttribute('color',    geom.getAttribute('color'));
+    if (geom.index) ig.setIndex(geom.index);
+    const iPos = new Float32Array(m * 3);
+    const iRot = new Float32Array(m);
+    const iScale = new Float32Array(m);
+    for (let k = 0; k < m; k++){
+      const x = arr[k*3+0], y = arr[k*3+1], z = arr[k*3+2];
+      iPos[k*3+0] = x; iPos[k*3+1] = y; iPos[k*3+2] = z;
+      const hx = _amHash(x, y);
+      const hy = _amHash(y, x + 7.3);
+      iRot[k] = hx * Math.PI * 2;
+      iScale[k] = 0.85 + hy * 0.30;
+    }
+    ig.setAttribute('iPos',   new THREE.InstancedBufferAttribute(iPos, 3));
+    ig.setAttribute('iRot',   new THREE.InstancedBufferAttribute(iRot, 1));
+    ig.setAttribute('iScale', new THREE.InstancedBufferAttribute(iScale, 1));
+    ig.instanceCount = m;
+    const mesh = new THREE.Mesh(ig, amenityPropMaterial);
+    mesh.frustumCulled = false;
+    propsGroup.add(mesh);
+    totalProps += m;
+  }
+  amenitiesGroup.visible = document.getElementById('showBld').checked;
+  document.getElementById('hud').insertAdjacentHTML('beforeend',
+    `<br>amenities: ${nAreas.toLocaleString()} areas · ${totalProps.toLocaleString()} props`);
 })();
 
 // ---------- Forest (low-poly conifers / birches at OSM forest cover) ----------
@@ -2057,14 +2514,14 @@ function loop(){
 }
 
 const exagEl = document.getElementById('exag');
-exagEl.oninput = () => { EXAG = +exagEl.value; document.getElementById('exagv').textContent = EXAG.toFixed(2); overlayUniforms.uExag.value = EXAG; buildingUniforms.uExag.value = EXAG; treeUniforms.uExag.value = EXAG; canopyUniforms.uExag.value = EXAG; waterUniforms.uExag.value = EXAG; /* faults z is baked at load time — updating fault EXAG requires geometry rebuild (out of scope) */ };
+exagEl.oninput = () => { EXAG = +exagEl.value; document.getElementById('exagv').textContent = EXAG.toFixed(2); overlayUniforms.uExag.value = EXAG; buildingUniforms.uExag.value = EXAG; treeUniforms.uExag.value = EXAG; canopyUniforms.uExag.value = EXAG; waterUniforms.uExag.value = EXAG; amenityAreaUniforms.uExag.value = EXAG; amenityPropUniforms.uExag.value = EXAG; /* faults z is baked at load time — updating fault EXAG requires geometry rebuild (out of scope) */ };
 const sseEl = document.getElementById('sse');
 sseEl.oninput = () => { SSE_PX = +sseEl.value; document.getElementById('ssev').textContent = SSE_PX.toFixed(1); };
 const segEl = document.getElementById('seg');
 segEl.oninput = () => { rebuildPlane(+segEl.value); document.getElementById('segv').textContent = SEG; };
 document.getElementById('showRoads').onchange = e => { roadsGroup.visible = e.target.checked; };
 document.getElementById('showTowns').onchange = e => { townsGroup.visible = e.target.checked; };
-document.getElementById('showBld').onchange = e => { buildingsGroup.visible = e.target.checked; };
+document.getElementById('showBld').onchange = e => { buildingsGroup.visible = e.target.checked; amenitiesGroup.visible = e.target.checked; };
 document.getElementById('showTrees').onchange = e => { treesGroup.visible = e.target.checked; canopyGroup.visible = e.target.checked; _updateForestVsGeology(); };
 const drapeEl = document.getElementById('drape');
 drapeEl.oninput = () => { overlayUniforms.uOffset.value = +drapeEl.value; document.getElementById('drapev').textContent = drapeEl.value; };
@@ -2074,6 +2531,8 @@ bldRangeEl.oninput = () => {
   document.getElementById('bldRangev').textContent = bldRangeEl.value;
   buildingUniforms.uFadeFar.value = BLD_RANGE;
   buildingUniforms.uFadeNear.value = Math.max(BLD_RANGE - 4000, BLD_RANGE * 0.7);
+  amenityAreaUniforms.uFadeFar.value = BLD_RANGE;
+  amenityAreaUniforms.uFadeNear.value = Math.max(BLD_RANGE - 4000, BLD_RANGE * 0.7);
 };
 const canopyRangeEl = document.getElementById('canopyRange');
 canopyRangeEl.oninput = () => {
