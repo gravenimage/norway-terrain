@@ -76,7 +76,7 @@ const FOG_NEAR = ROOT_SIZE*0.5, FOG_FAR = ROOT_SIZE*1.6;
 const FOG_COLOR = new THREE.Color(0x0c1322);
 scene.fog = new THREE.Fog(0x0c1322, FOG_NEAR, FOG_FAR);
 
-const camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 50, ROOT_SIZE*4);
+const camera = new THREE.PerspectiveCamera(55, innerWidth/innerHeight, 150, ROOT_SIZE*4);
 camera.up.set(0,0,1);
 camera.position.set(0, -120000, 90000);
 
@@ -894,7 +894,7 @@ const waterMaterial = new THREE.ShaderMaterial({
     varying float vDepthFade;
     void main(){
       vec3 p = position;
-      p.z *= uExag;
+      p.z = p.z * uExag + 0.3;
       vec4 wp = modelMatrix * vec4(p, 1.0);
       vWorld = wp.xyz;
       vDepthFade = clamp(p.z / 200.0, 0.0, 1.0);
@@ -920,8 +920,8 @@ const waterMaterial = new THREE.ShaderMaterial({
   side: THREE.FrontSide,
   extensions: { derivatives: true },
   polygonOffset: true,
-  polygonOffsetFactor: -1,
-  polygonOffsetUnits: -4,
+  polygonOffsetFactor: -2,
+  polygonOffsetUnits: -100,
 });
 
 const waterCells = [];
@@ -1313,6 +1313,9 @@ const geoUniforms = {
 
 function makeMaterial(){
   return new THREE.ShaderMaterial({
+    polygonOffset: true,
+    polygonOffsetFactor: 2,
+    polygonOffsetUnits: 50,
     uniforms: {
       uHeight:   { value: null },
       uOriginXY: { value: new THREE.Vector2() },
