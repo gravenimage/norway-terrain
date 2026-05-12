@@ -1641,7 +1641,7 @@ function loop(){
 }
 
 const exagEl = document.getElementById('exag');
-exagEl.oninput = () => { EXAG = +exagEl.value; document.getElementById('exagv').textContent = EXAG.toFixed(2); overlayUniforms.uExag.value = EXAG; buildingUniforms.uExag.value = EXAG; treeUniforms.uExag.value = EXAG; canopyUniforms.uExag.value = EXAG; waterUniforms.uExag.value = EXAG; };
+exagEl.oninput = () => { EXAG = +exagEl.value; document.getElementById('exagv').textContent = EXAG.toFixed(2); overlayUniforms.uExag.value = EXAG; buildingUniforms.uExag.value = EXAG; treeUniforms.uExag.value = EXAG; canopyUniforms.uExag.value = EXAG; waterUniforms.uExag.value = EXAG; bedrockMat.uniforms.uExag.value = EXAG; quatMat.uniforms.uExag.value = EXAG; /* faults z is baked at load time — updating fault EXAG requires geometry rebuild (out of scope) */ };
 const sseEl = document.getElementById('sse');
 sseEl.oninput = () => { SSE_PX = +sseEl.value; document.getElementById('ssev').textContent = SSE_PX.toFixed(1); };
 const segEl = document.getElementById('seg');
