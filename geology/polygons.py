@@ -55,6 +55,66 @@ def triangulate(rings: list[Ring]) -> tuple[np.ndarray, np.ndarray]:
     return verts, tri
 
 
+def subdivide_triangles(
+    verts: np.ndarray,
+    tris: np.ndarray,
+    max_edge: float,
+    max_iters: int = 8,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Recursively 1-to-4 split any triangle with an edge longer than max_edge.
+
+    Returns refined (verts (N,2) float64, tris (M,3) uint32). Shares midpoint
+    vertices between neighbouring triangles so the mesh stays watertight.
+    """
+    vlist: list[tuple[float, float]] = [(float(v[0]), float(v[1])) for v in verts]
+    tlist: list[tuple[int, int, int]] = [(int(t[0]), int(t[1]), int(t[2])) for t in tris]
+    mid_cache: dict[tuple[int, int], int] = {}
+
+    def get_mid(i: int, j: int) -> int:
+        key = (i, j) if i < j else (j, i)
+        cached = mid_cache.get(key)
+        if cached is not None:
+            return cached
+        vi = vlist[i]
+        vj = vlist[j]
+        new_idx = len(vlist)
+        vlist.append(((vi[0] + vj[0]) * 0.5, (vi[1] + vj[1]) * 0.5))
+        mid_cache[key] = new_idx
+        return new_idx
+
+    me2 = max_edge * max_edge
+    for _ in range(max_iters):
+        new_tlist: list[tuple[int, int, int]] = []
+        changed = False
+        for (a, b, c) in tlist:
+            va = vlist[a]; vb = vlist[b]; vc = vlist[c]
+            dxab = va[0] - vb[0]; dyab = va[1] - vb[1]
+            dxbc = vb[0] - vc[0]; dybc = vb[1] - vc[1]
+            dxca = vc[0] - va[0]; dyca = vc[1] - va[1]
+            d2ab = dxab * dxab + dyab * dyab
+            d2bc = dxbc * dxbc + dybc * dybc
+            d2ca = dxca * dxca + dyca * dyca
+            if max(d2ab, d2bc, d2ca) > me2:
+                d = get_mid(a, b)
+                e = get_mid(b, c)
+                f = get_mid(c, a)
+                new_tlist.append((a, d, f))
+                new_tlist.append((d, b, e))
+                new_tlist.append((f, e, c))
+                new_tlist.append((d, e, f))
+                changed = True
+            else:
+                new_tlist.append((a, b, c))
+        tlist = new_tlist
+        if not changed:
+            break
+
+    return (
+        np.asarray(vlist, dtype=np.float64),
+        np.asarray(tlist, dtype=np.uint32),
+    )
+
+
 def bin_polygons(polys: Iterable[PreparedPoly], cell_size: float) -> dict[tuple[int, int], list[PreparedPoly]]:
     """Assign each polygon to one cell by its centroid."""
     cells: dict[tuple[int, int], list[PreparedPoly]] = {}

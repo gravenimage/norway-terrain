@@ -26,6 +26,13 @@ ROOT = Path(__file__).resolve().parent
 CACHE = ROOT / "geology_cache"
 DEM = ROOT / "rogaland_10m.tif"
 CELL_SIZE_M = 4000.0
+# Max edge length for the refined geology triangles. Polygons (especially
+# bedrock at 1:250k) are originally km-scale, so their flat-triangulated
+# interiors sit below DEM peaks. Subdividing to ~200 m keeps Z-drape close
+# to the underlying terrain without blowing up file size.
+MAX_TRI_EDGE_M = 200.0
+# Cap iterations to limit worst-case growth on very large polygons.
+MAX_SUBDIVIDE_ITERS = 4
 
 # WGS84 bbox for Rogaland (matches existing scripts)
 BBOX_WGS84 = (4.0, 58.0, 7.5, 60.5)
@@ -443,6 +450,9 @@ def _build_polygon_layer(
         for p in items:
             try:
                 v2d, tris = polygons.triangulate(p.rings)
+                v2d, tris = polygons.subdivide_triangles(
+                    v2d, tris, MAX_TRI_EDGE_M, max_iters=MAX_SUBDIVIDE_ITERS
+                )
             except Exception:
                 continue
             zs = _drape_z(v2d.astype(np.float64), dem, dem_tf, dem_w, dem_h)

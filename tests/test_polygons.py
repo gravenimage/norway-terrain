@@ -41,3 +41,21 @@ def test_bin_polygon_by_centroid():
     assert list(cells.keys()) == [(0, 0)]
     assert len(cells[(0, 0)]) == 1
     assert cells[(0, 0)][0].rock_id == 42
+
+
+def test_subdivide_reduces_max_edge():
+    ring = [(0.0, 0.0), (1000.0, 0.0), (1000.0, 1000.0), (0.0, 1000.0)]
+    verts, tris = polygons.triangulate([ring])
+    # original triangles have edges up to ~1414 m (diagonal)
+    v2, t2 = polygons.subdivide_triangles(verts, tris, max_edge=100.0)
+    # check every edge in refined mesh is below threshold
+    import numpy as np
+    for (a, b, c) in t2:
+        for i, j in [(a, b), (b, c), (c, a)]:
+            d = np.hypot(v2[i, 0] - v2[j, 0], v2[i, 1] - v2[j, 1])
+            assert d <= 100.0 + 1e-6
+    # triangle count must have grown
+    assert len(t2) > len(tris) * 4
+    # midpoints must be shared (no duplicate vertices at same XY)
+    seen = {tuple(np.round(v, 6)) for v in v2}
+    assert len(seen) == len(v2)

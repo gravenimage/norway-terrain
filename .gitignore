@@ -14,3 +14,7 @@ geology_cache/
 /canopy.bin
 *.tif.aux.xml
 
+
+/bedrock.bin
+/quaternary.bin
+
