@@ -1719,6 +1719,107 @@ function drawTile(z,x,y, b, tz,tx,ty, tex){
   drawn++;
 }
 
+// ---------- compass overlay (bottom-left) ----------
+const compassScene = new THREE.Scene();
+const compassCam = new THREE.PerspectiveCamera(35, 1, 0.1, 100);
+compassCam.up.set(0,0,1);
+compassScene.add(new THREE.AmbientLight(0xffffff, 0.55));
+const _compassLight = new THREE.DirectionalLight(0xffffff, 0.9);
+_compassLight.position.set(2, 3, 4);
+compassScene.add(_compassLight);
+
+const compassArrow = new THREE.Group();
+
+// Base disc (so the arrow visibly lies on a horizontal plane)
+const _baseDisc = new THREE.Mesh(
+  new THREE.CircleGeometry(1.25, 48),
+  new THREE.MeshBasicMaterial({ color: 0x0c1322, transparent: true, opacity: 0.55, depthWrite: false })
+);
+compassArrow.add(_baseDisc);
+const _baseRing = new THREE.Mesh(
+  new THREE.RingGeometry(1.18, 1.28, 64),
+  new THREE.MeshBasicMaterial({ color: 0xb0c4d8, transparent: true, opacity: 0.85, depthWrite: false })
+);
+_baseRing.position.z = 0.001;
+compassArrow.add(_baseRing);
+
+// Shaft (cylinder is along +Y by default after rotation; CylinderGeometry default is along +Y)
+const _shaft = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.09, 0.09, 1.1, 18),
+  new THREE.MeshStandardMaterial({ color: 0xd33b3b, roughness: 0.55, metalness: 0.1 })
+);
+// CylinderGeometry's axis is Y, so it already points along +Y. Lay it flat in XY.
+_shaft.position.set(0, -0.05, 0.09);
+compassArrow.add(_shaft);
+
+// Head (cone along +Y by default)
+const _head = new THREE.Mesh(
+  new THREE.ConeGeometry(0.26, 0.5, 22),
+  new THREE.MeshStandardMaterial({ color: 0xd33b3b, roughness: 0.55, metalness: 0.1 })
+);
+_head.position.set(0, 0.75, 0.09);
+compassArrow.add(_head);
+
+// Tail fin (points south, darker)
+const _tail = new THREE.Mesh(
+  new THREE.ConeGeometry(0.20, 0.35, 22),
+  new THREE.MeshStandardMaterial({ color: 0x2a3a55, roughness: 0.65 })
+);
+_tail.position.set(0, -0.78, 0.09);
+_tail.rotation.x = Math.PI; // point -Y
+compassArrow.add(_tail);
+
+// "N" label as a sprite at the tip
+const _nCanvas = document.createElement('canvas');
+_nCanvas.width = 96; _nCanvas.height = 96;
+{
+  const c = _nCanvas.getContext('2d');
+  c.clearRect(0, 0, 96, 96);
+  c.fillStyle = '#ffffff';
+  c.strokeStyle = '#000000';
+  c.lineWidth = 6;
+  c.font = 'bold 72px sans-serif';
+  c.textAlign = 'center'; c.textBaseline = 'middle';
+  c.strokeText('N', 48, 52);
+  c.fillText('N', 48, 52);
+}
+const _nTex = new THREE.CanvasTexture(_nCanvas);
+_nTex.colorSpace = THREE.SRGBColorSpace;
+_nTex.anisotropy = 4;
+const _nSprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: _nTex, depthTest: false, transparent: true }));
+_nSprite.scale.set(0.55, 0.55, 1);
+_nSprite.position.set(0, 1.42, 0.09);
+compassArrow.add(_nSprite);
+
+compassScene.add(compassArrow);
+
+const COMPASS_SIZE_PX = 140;
+const COMPASS_PAD_PX = 16;
+const COMPASS_DIST = 3.4;
+const _compassFwd = new THREE.Vector3();
+
+function renderCompass() {
+  // Mirror main camera orientation around the arrow's origin so visual north matches.
+  _compassFwd.set(0, 0, -1).applyQuaternion(camera.quaternion);
+  compassCam.position.copy(_compassFwd).multiplyScalar(-COMPASS_DIST);
+  compassCam.quaternion.copy(camera.quaternion);
+  compassCam.updateMatrixWorld();
+
+  const s = COMPASS_SIZE_PX;
+  const x = COMPASS_PAD_PX;
+  const y = COMPASS_PAD_PX; // GL origin is bottom-left, so this places it at bottom-left
+  const prevAutoClear = renderer.autoClear;
+  renderer.autoClear = false;
+  renderer.setScissorTest(true);
+  renderer.setViewport(x, y, s, s);
+  renderer.setScissor(x, y, s, s);
+  renderer.clearDepth();
+  renderer.render(compassScene, compassCam);
+  renderer.setScissorTest(false);
+  renderer.setViewport(0, 0, window.innerWidth, window.innerHeight);
+  renderer.autoClear = prevAutoClear;
+}
+
 // ---------- main loop ----------
 let last = performance.now(), frames=0;
 function loop(){
@@ -1736,6 +1837,7 @@ function loop(){
   cullForest();
   evictCache();
   renderer.render(scene, camera);
+  renderCompass();
 
   frames++;
   const now = performance.now();
