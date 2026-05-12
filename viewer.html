@@ -1756,7 +1756,7 @@ segEl.oninput = () => { rebuildPlane(+segEl.value); document.getElementById('seg
 document.getElementById('showRoads').onchange = e => { roadsGroup.visible = e.target.checked; };
 document.getElementById('showTowns').onchange = e => { townsGroup.visible = e.target.checked; };
 document.getElementById('showBld').onchange = e => { buildingsGroup.visible = e.target.checked; };
-document.getElementById('showTrees').onchange = e => { treesGroup.visible = e.target.checked; canopyGroup.visible = e.target.checked; };
+document.getElementById('showTrees').onchange = e => { treesGroup.visible = e.target.checked; canopyGroup.visible = e.target.checked; _updateForestVsGeology(); };
 const drapeEl = document.getElementById('drape');
 drapeEl.oninput = () => { overlayUniforms.uOffset.value = +drapeEl.value; document.getElementById('drapev').textContent = drapeEl.value; };
 const bldRangeEl = document.getElementById('bldRange');
@@ -1786,11 +1786,19 @@ canopyLodEl.oninput = () => {
   canopyUniforms.uFadeFar.value  = CANOPY_LOD_HI;
 };
 
+function _updateForestVsGeology() {
+  const geoOn = geoUniforms.uBedShow.value > 0.5 || geoUniforms.uQuatShow.value > 0.5;
+  const treesWanted = document.getElementById('showTrees').checked;
+  treesGroup.visible  = treesWanted && !geoOn;
+  canopyGroup.visible = treesWanted && !geoOn;
+}
 document.getElementById('cb-bedrock').addEventListener('change', e => {
   geoUniforms.uBedShow.value = e.target.checked ? 1.0 : 0.0;
+  _updateForestVsGeology();
 });
 document.getElementById('cb-quat').addEventListener('change', e => {
   geoUniforms.uQuatShow.value = e.target.checked ? 1.0 : 0.0;
+  _updateForestVsGeology();
 });
 document.getElementById('cb-faults').addEventListener('change', e => {
   faultsGroup.visible = e.target.checked;
