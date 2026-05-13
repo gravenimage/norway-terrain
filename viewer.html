@@ -105,6 +105,7 @@ controls.minDistance = 200;
 controls.maxDistance = ROOT_SIZE*2;
 controls.maxPolarAngle = Math.PI*0.49;
 controls.zoomSpeed = 1.6;
+window.__viewer = { camera, controls, renderer, scene };
 
 // ---------- persist camera + target across reloads ----------
 const CAM_STORAGE_KEY = 'norwayterrain.cam.v1';
@@ -189,7 +190,7 @@ function makeLineMaterial(color){
 }
 
 const ROAD_COLORS_ARR = [
-  '#ff5050', // motorway
+  '#ff5050', // motorway (unused: roads are now shader-rendered)
   '#ff8a3c', // trunk
   '#ffc846', // primary
   '#ffe89a', // secondary
@@ -197,10 +198,145 @@ const ROAD_COLORS_ARR = [
 ];
 const TOWN_COLOR = '#7be0c8';
 
-const roadsGroup = new THREE.Group();
+const roadsGroup = new THREE.Group();   // kept for back-compat; empty in shader mode
 const townsGroup = new THREE.Group();
 scene.add(roadsGroup);
 scene.add(townsGroup);
+
+// Realistic per-class road halfwidths (metres). Must match the values
+// hard-coded in the terrain fragment shader.
+const ROAD_HALF_W = [6.5, 5.0, 4.0, 3.25, 2.75];
+
+// Builds the spatial grid + data textures consumed by the terrain shader's
+// road overlay. segsByClass: Array(5) of Float32Array, packed (x0,y0,x1,y1,...).
+function buildRoadOverlay(segsByClass){
+  const xMinC = SRC.xMin - CENTER_X;
+  const yMinC = SRC.yMin - CENTER_Y;
+  const W = SRC.xMax - SRC.xMin;
+  const H = SRC.yMax - SRC.yMin;
+  const cell = 100.0;
+  const gridW = Math.ceil(W / cell);
+  const gridH = Math.ceil(H / cell);
+
+  let N = 0;
+  for (let cls = 0; cls < 5; cls++) N += (segsByClass[cls].length / 4) | 0;
+
+  // ax, ay, bx, by, cls per segment
+  const segAx = new Float32Array(N);
+  const segAy = new Float32Array(N);
+  const segBx = new Float32Array(N);
+  const segBy = new Float32Array(N);
+  const segCls = new Uint8Array(N);
+  {
+    let i = 0;
+    for (let cls = 0; cls < 5; cls++) {
+      const arr = segsByClass[cls];
+      const m = (arr.length / 4) | 0;
+      for (let k = 0; k < m; k++) {
+        segAx[i] = arr[k*4 + 0];
+        segAy[i] = arr[k*4 + 1];
+        segBx[i] = arr[k*4 + 2];
+        segBy[i] = arr[k*4 + 3];
+        segCls[i] = cls;
+        i++;
+      }
+    }
+  }
+
+  // Bucket segments into cells whose expanded AABB they touch.
+  const cellCount = gridW * gridH;
+  const cells = new Array(cellCount);
+  for (let i = 0; i < cellCount; i++) cells[i] = [];
+  let maxCellCount = 0;
+  for (let i = 0; i < N; i++) {
+    const cls = segCls[i];
+    const hw = ROAD_HALF_W[cls];
+    const minX = Math.min(segAx[i], segBx[i]) - hw;
+    const maxX = Math.max(segAx[i], segBx[i]) + hw;
+    const minY = Math.min(segAy[i], segBy[i]) - hw;
+    const maxY = Math.max(segAy[i], segBy[i]) + hw;
+    let cx0 = Math.floor((minX - xMinC) / cell);
+    let cx1 = Math.floor((maxX - xMinC) / cell);
+    let cy0 = Math.floor((minY - yMinC) / cell);
+    let cy1 = Math.floor((maxY - yMinC) / cell);
+    if (cx1 < 0 || cy1 < 0 || cx0 >= gridW || cy0 >= gridH) continue;
+    if (cx0 < 0) cx0 = 0; if (cx1 >= gridW) cx1 = gridW - 1;
+    if (cy0 < 0) cy0 = 0; if (cy1 >= gridH) cy1 = gridH - 1;
+    for (let cy = cy0; cy <= cy1; cy++) {
+      for (let cx = cx0; cx <= cx1; cx++) {
+        cells[cy * gridW + cx].push(i);
+      }
+    }
+  }
+
+  let totalRefs = 0;
+  for (let c = 0; c < cellCount; c++) {
+    const n = cells[c].length;
+    if (n > maxCellCount) maxCellCount = n;
+    totalRefs += n;
+  }
+
+  // Pack refs into a 2-D texture (RGBA = ax, ay, bx, by) + parallel R8 class texture.
+  const refsTexW = 2048;
+  const refsTexH = Math.max(1, Math.ceil(totalRefs / refsTexW));
+  const refsData = new Float32Array(refsTexW * refsTexH * 4);
+  const clsData  = new Uint8Array(refsTexW * refsTexH);
+  const gridData = new Float32Array(gridW * gridH * 2);
+
+  let p = 0;
+  for (let c = 0; c < cellCount; c++) {
+    const list = cells[c];
+    gridData[c * 2 + 0] = p;
+    gridData[c * 2 + 1] = list.length;
+    // Cap per-cell list at 128 (shader loop bound). Sort by class so we keep
+    // the largest roads when overflow happens.
+    let lim = list.length;
+    if (lim > 128) {
+      list.sort((a, b) => segCls[a] - segCls[b]);
+      lim = 128;
+      gridData[c * 2 + 1] = 128;
+    }
+    for (let kk = 0; kk < lim; kk++) {
+      const idx = list[kk];
+      refsData[p * 4 + 0] = segAx[idx];
+      refsData[p * 4 + 1] = segAy[idx];
+      refsData[p * 4 + 2] = segBx[idx];
+      refsData[p * 4 + 3] = segBy[idx];
+      clsData[p] = segCls[idx];
+      p++;
+    }
+  }
+
+  const gridTex = new THREE.DataTexture(gridData, gridW, gridH, THREE.RGFormat, THREE.FloatType);
+  gridTex.minFilter = THREE.NearestFilter; gridTex.magFilter = THREE.NearestFilter;
+  gridTex.wrapS = THREE.ClampToEdgeWrapping; gridTex.wrapT = THREE.ClampToEdgeWrapping;
+  gridTex.needsUpdate = true;
+
+  const refsTex = new THREE.DataTexture(refsData, refsTexW, refsTexH, THREE.RGBAFormat, THREE.FloatType);
+  refsTex.minFilter = THREE.NearestFilter; refsTex.magFilter = THREE.NearestFilter;
+  refsTex.wrapS = THREE.ClampToEdgeWrapping; refsTex.wrapT = THREE.ClampToEdgeWrapping;
+  refsTex.needsUpdate = true;
+
+  const clsTex = new THREE.DataTexture(clsData, refsTexW, refsTexH, THREE.RedFormat, THREE.UnsignedByteType);
+  clsTex.minFilter = THREE.NearestFilter; clsTex.magFilter = THREE.NearestFilter;
+  clsTex.wrapS = THREE.ClampToEdgeWrapping; clsTex.wrapT = THREE.ClampToEdgeWrapping;
+  clsTex.needsUpdate = true;
+
+  roadUniforms.uRoadGrid.value = gridTex;
+  roadUniforms.uRoadRefs.value = refsTex;
+  roadUniforms.uRoadCls.value  = clsTex;
+  roadUniforms.uRoadOrigin.value.set(xMinC, yMinC);
+  roadUniforms.uRoadCell.value = cell;
+  roadUniforms.uRoadGridDims.value.set(gridW, gridH);
+  roadUniforms.uRoadRefsDims.value.set(refsTexW, refsTexH);
+  roadUniforms.uRoadReady.value = 1.0;
+
+  // Expose for the B-key HUD
+  window.__roadGrid = { gridW, gridH, gridData, maxCellCount, totalRefs, N, cell, xMinC, yMinC };
+
+  console.log(`roads: ${N.toLocaleString()} segs · grid ${gridW}×${gridH} @ ${cell}m · ${totalRefs.toLocaleString()} refs · max ${maxCellCount} segs/cell · refs tex ${refsTexW}×${refsTexH}`);
+  if (maxCellCount > 128) console.warn(`road grid: ${maxCellCount} > 128 segs in some cell — overflow truncated`);
+}
 
 (async () => {
   try {
@@ -213,22 +349,40 @@ scene.add(townsGroup);
     /* centerX */ dv.getFloat64(off, true); off += 8;
     /* centerY */ dv.getFloat64(off, true); off += 8;
     let totalSegs = 0, townSegs = 0;
+    // Collect per-class segments (x0,y0,x1,y1 quads) for the shader overlay.
+    const segsByClass = [[], [], [], [], []];
     for (let g = 0; g < nGroups; g++) {
       const cls = dv.getUint8(off); off += 4; // 1 byte cls + 3 pad
       const n = dv.getUint32(off, true); off += 4;
       // n is even (LineSegments pair vertices)
       const verts = new Float32Array(ab, off, n * 3);
       off += n * 3 * 4;
-      const geom = new THREE.BufferGeometry();
-      geom.setAttribute('position', new THREE.BufferAttribute(verts, 3));
-      const color = (cls === 5) ? TOWN_COLOR : ROAD_COLORS_ARR[cls];
-      const mat = makeLineMaterial(color);
-      const ls = new THREE.LineSegments(geom, mat);
-      ls.frustumCulled = false;
-      ls.renderOrder = (cls === 5) ? 11 : 10;
-      if (cls === 5) { townsGroup.add(ls); townSegs += n / 2; }
-      else { roadsGroup.add(ls); totalSegs += n / 2; }
+      if (cls === 5) {
+        // Kommune boundaries: still drawn as actual line segments.
+        const geom = new THREE.BufferGeometry();
+        geom.setAttribute('position', new THREE.BufferAttribute(verts, 3));
+        const mat = makeLineMaterial(TOWN_COLOR);
+        const ls = new THREE.LineSegments(geom, mat);
+        ls.frustumCulled = false;
+        ls.renderOrder = 11;
+        townsGroup.add(ls);
+        townSegs += n / 2;
+      } else if (cls >= 0 && cls <= 4) {
+        // Roads: extract (x0,y0,x1,y1) pairs for the shader spatial index.
+        const m = (n / 2) | 0;
+        const out = new Float32Array(m * 4);
+        for (let k = 0; k < m; k++) {
+          out[k*4 + 0] = verts[k*6 + 0];
+          out[k*4 + 1] = verts[k*6 + 1];
+          out[k*4 + 2] = verts[k*6 + 3];
+          out[k*4 + 3] = verts[k*6 + 4];
+        }
+        segsByClass[cls] = segsByClass[cls].length
+          ? Float32Concat(segsByClass[cls], out) : out;
+        totalSegs += m;
+      }
     }
+    buildRoadOverlay(segsByClass);
     overlayUniforms.uExag.value = EXAG;
     document.getElementById('hud').insertAdjacentHTML('beforeend',
       `<br>roads: ${totalSegs.toLocaleString()} segs · kommune: ${townSegs.toLocaleString()} segs`);
@@ -236,6 +390,12 @@ scene.add(townsGroup);
     console.warn('osm.bin not loaded:', e);
   }
 })();
+
+function Float32Concat(a, b) {
+  const out = new Float32Array(a.length + b.length);
+  out.set(a, 0); out.set(b, a.length);
+  return out;
+}
 
 // ---------- Buildings (stylized Norwegian houses + apartments) ----------
 // 12-colour palette: 0..4 house wood, 5..7 apartments, 8..10 commercial, 11 cabin brown
@@ -1762,6 +1922,16 @@ uniform float uContourBoldEvery;  // e.g. 5 -> every 5th line is an index contou
 uniform vec3  uContourColor;
 uniform vec3  uContourBoldColor;
 uniform float uContourOpacity;
+// ----- road overlay uniforms (shared across all terrain materials) -----
+uniform sampler2D uRoadGrid;      // RG float, per-cell (offset, count) into uRoadRefs
+uniform sampler2D uRoadRefs;      // RGBA float, per ref (ax, ay, bx, by) centred world
+uniform sampler2D uRoadCls;       // R8, per ref class (0..4) stored as cls/255
+uniform vec2  uRoadOrigin;        // (xMinC, yMinC) — bottom-left of grid in centred coords
+uniform float uRoadCell;          // metres per grid cell
+uniform vec2  uRoadGridDims;      // (gridW, gridH)
+uniform vec2  uRoadRefsDims;      // (refsTexW, refsTexH)
+uniform float uRoadShow;          // 0 or 1
+uniform float uRoadReady;         // 0 until osm.bin is parsed and textures uploaded
 varying vec3 vWorld;
 varying vec2 vUv;
 varying float vH;
@@ -1779,6 +1949,20 @@ vec4 sampleGeo(sampler2D tex, sampler2D pal, float palN, vec2 wxy) {
   if (idF < 0.5 || palN < 1.0) return vec4(0.0);
   vec2 puv = vec2((idF - 0.5) / palN, 0.5);
   return vec4(texture2D(pal, puv).rgb, 1.0);
+}
+// Compute centre-of-texel UV for a 1-D ref index packed into the (refsTexW × refsTexH) texture.
+vec2 _refUV(float i){
+  float w = uRoadRefsDims.x;
+  float h = uRoadRefsDims.y;
+  float row = floor(i / w);
+  float colF = i - row * w;
+  return vec2((colF + 0.5) / w, (row + 0.5) / h);
+}
+float _distSeg(vec2 p, vec2 a, vec2 b){
+  vec2 d = b - a;
+  float L2 = max(dot(d, d), 1e-6);
+  float t = clamp(dot(p - a, d) / L2, 0.0, 1.0);
+  return length(p - (a + d * t));
 }
 vec3 ramp(float zReal){
   // Rogaland palette: emerald coastal forest → mossy heath → dark upland heath.
@@ -1864,6 +2048,62 @@ void main(){
     float a = max(lineA * 0.55, boldA * 0.9) * uContourOpacity * landMask;
     col = mix(col, lineCol, a);
   }
+  // --- roads (shader overlay; spatial-grid lookup of nearest OSM segment) ---
+  if (uRoadShow > 0.5 && uRoadReady > 0.5) {
+    vec2 p = vWorld.xy;
+    vec2 cf = (p - uRoadOrigin) / uRoadCell;
+    vec2 cellF = floor(cf);
+    float minDist = 1e9;
+    float minClsF = -1.0;
+    for (int dy = -1; dy <= 1; dy++) {
+      for (int dx = -1; dx <= 1; dx++) {
+        vec2 c = cellF + vec2(float(dx), float(dy));
+        if (c.x < 0.0 || c.y < 0.0 || c.x >= uRoadGridDims.x || c.y >= uRoadGridDims.y) continue;
+        vec2 cellUV = vec2((c.x + 0.5) / uRoadGridDims.x, (c.y + 0.5) / uRoadGridDims.y);
+        vec2 hdr = texture2D(uRoadGrid, cellUV).rg;
+        float off = hdr.r;
+        float cnt = hdr.g;
+        for (int k = 0; k < 128; k++) {
+          if (float(k) >= cnt) break;
+          float ri = off + float(k);
+          vec2 ruv = _refUV(ri);
+          vec4 s = texture2D(uRoadRefs, ruv);
+          float d = _distSeg(p, s.xy, s.zw);
+          if (d < minDist) {
+            minDist = d;
+            minClsF = floor(texture2D(uRoadCls, ruv).r * 255.0 + 0.5);
+          }
+        }
+      }
+    }
+    if (minClsF >= 0.0) {
+      int minCls = int(minClsF);
+      float halfW = (minCls == 0) ? 6.5 :
+                    (minCls == 1) ? 5.0 :
+                    (minCls == 2) ? 4.0 :
+                    (minCls == 3) ? 3.25 : 2.75;
+      float aaw = max(fwidth(minDist), 0.25);
+      float coreT = 1.0 - smoothstep(halfW - aaw, halfW + aaw, minDist);
+      vec3 coreCol = (minCls == 0) ? vec3(0.165, 0.165, 0.175) :
+                     (minCls == 1) ? vec3(0.180, 0.180, 0.185) :
+                     (minCls == 2) ? vec3(0.210, 0.205, 0.180) :
+                     (minCls == 3) ? vec3(0.225, 0.215, 0.195) :
+                                     vec3(0.240, 0.225, 0.205);
+      // subtle per-metre hash grain to break up flat asphalt
+      float grain = fract(sin(dot(floor(vWorld.xy), vec2(12.9898, 78.233))) * 43758.5453);
+      coreCol *= (0.90 + 0.18 * grain);
+      vec3 roadShaded = coreCol * (0.40 + 0.70 * diff);
+      // Thin lighter shoulder for motorways/trunks
+      if (minCls <= 1) {
+        float edgeHi = halfW + 0.6;
+        float edgeT = (1.0 - smoothstep(edgeHi - aaw, edgeHi + aaw, minDist)) - coreT;
+        edgeT = clamp(edgeT, 0.0, 1.0);
+        vec3 edgeCol = vec3(0.55, 0.54, 0.50) * (0.40 + 0.70 * diff);
+        col = mix(col, edgeCol, edgeT * 0.85);
+      }
+      col = mix(col, roadShaded, coreT);
+    }
+  }
   // distance fog
   float fogF = smoothstep(uFogNear, uFogFar, length(vWorld - cameraPosition));
   col = mix(col, uFogColor, fogF);
@@ -1898,6 +2138,29 @@ const contourUniforms = {
   uContourColor:     { value: new THREE.Color(0x2a1a08) },  // thin: dark brown
   uContourBoldColor: { value: new THREE.Color(0x140803) },  // bold: near-black
   uContourOpacity:   { value: 0.75 },
+};
+
+// Shared road overlay uniforms. Roads are NOT drawn as separate meshes;
+// instead, the terrain fragment shader looks up the nearest road segment
+// for each pixel via a coarse spatial grid (built from osm.bin at load
+// time) and tints the terrain colour where the pixel falls within road
+// half-width of a segment. See buildRoadOverlay() below.
+const _dummyRoadGrid = new THREE.DataTexture(new Float32Array([0, 0]), 1, 1, THREE.RGFormat, THREE.FloatType);
+_dummyRoadGrid.minFilter = THREE.NearestFilter; _dummyRoadGrid.magFilter = THREE.NearestFilter; _dummyRoadGrid.needsUpdate = true;
+const _dummyRoadRefs = new THREE.DataTexture(new Float32Array([0,0,0,0]), 1, 1, THREE.RGBAFormat, THREE.FloatType);
+_dummyRoadRefs.minFilter = THREE.NearestFilter; _dummyRoadRefs.magFilter = THREE.NearestFilter; _dummyRoadRefs.needsUpdate = true;
+const _dummyRoadCls = new THREE.DataTexture(new Uint8Array([0]), 1, 1, THREE.RedFormat, THREE.UnsignedByteType);
+_dummyRoadCls.minFilter = THREE.NearestFilter; _dummyRoadCls.magFilter = THREE.NearestFilter; _dummyRoadCls.needsUpdate = true;
+const roadUniforms = {
+  uRoadGrid:      { value: _dummyRoadGrid },
+  uRoadRefs:      { value: _dummyRoadRefs },
+  uRoadCls:       { value: _dummyRoadCls },
+  uRoadOrigin:    { value: new THREE.Vector2(0, 0) },
+  uRoadCell:      { value: 500.0 },
+  uRoadGridDims:  { value: new THREE.Vector2(1, 1) },
+  uRoadRefsDims:  { value: new THREE.Vector2(1, 1) },
+  uRoadShow:      { value: 1.0 },
+  uRoadReady:     { value: 0.0 },
 };
 
 function makeMaterial(){
@@ -1936,6 +2199,16 @@ function makeMaterial(){
       uContourColor:     contourUniforms.uContourColor,
       uContourBoldColor: contourUniforms.uContourBoldColor,
       uContourOpacity:   contourUniforms.uContourOpacity,
+      // road overlay (shared-by-reference):
+      uRoadGrid:      roadUniforms.uRoadGrid,
+      uRoadRefs:      roadUniforms.uRoadRefs,
+      uRoadCls:       roadUniforms.uRoadCls,
+      uRoadOrigin:    roadUniforms.uRoadOrigin,
+      uRoadCell:      roadUniforms.uRoadCell,
+      uRoadGridDims:  roadUniforms.uRoadGridDims,
+      uRoadRefsDims:  roadUniforms.uRoadRefsDims,
+      uRoadShow:      roadUniforms.uRoadShow,
+      uRoadReady:     roadUniforms.uRoadReady,
     },
     vertexShader: vert,
     fragmentShader: frag,
@@ -2519,7 +2792,7 @@ const sseEl = document.getElementById('sse');
 sseEl.oninput = () => { SSE_PX = +sseEl.value; document.getElementById('ssev').textContent = SSE_PX.toFixed(1); };
 const segEl = document.getElementById('seg');
 segEl.oninput = () => { rebuildPlane(+segEl.value); document.getElementById('segv').textContent = SEG; };
-document.getElementById('showRoads').onchange = e => { roadsGroup.visible = e.target.checked; };
+document.getElementById('showRoads').onchange = e => { roadUniforms.uRoadShow.value = e.target.checked ? 1.0 : 0.0; };
 document.getElementById('showTowns').onchange = e => { townsGroup.visible = e.target.checked; };
 document.getElementById('showBld').onchange = e => { buildingsGroup.visible = e.target.checked; amenitiesGroup.visible = e.target.checked; };
 document.getElementById('showTrees').onchange = e => { treesGroup.visible = e.target.checked; canopyGroup.visible = e.target.checked; _updateForestVsGeology(); };
