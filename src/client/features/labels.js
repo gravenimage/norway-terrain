@@ -16,7 +16,11 @@
 const LABEL_HEIGHT_M = 75;       // metres above the terrain surface
 const CULL_RADIUS_M = 2000;      // 2 km from camera
 const CULL_RADIUS_SQ = CULL_RADIUS_M * CULL_RADIUS_M;
-const LABEL_WORLD_HEIGHT = 6;    // world-space sprite height in metres; width scales by aspect
+const LABEL_WORLD_HEIGHT = 30;   // world-space sprite height in metres; width scales by aspect
+// Render last + skip depth-test so labels are never occluded by trees, water, buildings, or
+// each other. Terrain occlusion is lost as a side-effect, which is the desired UX for map-style
+// "name tags": you can read the label of any nearby feature even if it's behind a hill.
+const LABEL_RENDER_ORDER = 999;
 
 /**
  * Parse a `features.json` payload into a stable array of plain feature records. Throws on bad
@@ -134,9 +138,10 @@ export function createLabelSystem({
       transparent: true,
       opacity: 0.85,
       depthWrite: false,
-      depthTest: true,
+      depthTest: false,
     });
     const sprite = new THREE.Sprite(mat);
+    sprite.renderOrder = LABEL_RENDER_ORDER;
     const aspect = cvs.width / cvs.height;
     sprite.scale.set(LABEL_WORLD_HEIGHT * aspect, LABEL_WORLD_HEIGHT, 1);
     sprite.position.set(f.x, f.y, f.z * getExag() + LABEL_HEIGHT_M);
