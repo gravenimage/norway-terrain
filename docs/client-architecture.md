@@ -9,7 +9,7 @@ The browser client starts in `viewer.html`, imports `src/client/init.js`, and in
 - `rendering/`: scene setup, camera persistence, frustum updates, material factories, render loop, and compass.
 - `shaders/`: shader source strings moved from the original viewer without formula changes.
 - `overlays/`: roads, geology, contours, faults, and click-to-identify.
-- `features/`: buildings, forest/canopy, water, amenities, and geometry builders.
+- `features/`: buildings, forest/canopy, water, amenities, road-trip camera, place-name labels, and geometry builders.
 - `ui/`: DOM controls and HUD updates.
 
 ## Preserved contracts

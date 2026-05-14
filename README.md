@@ -57,8 +57,20 @@ Use the mouse to fly around:
 
 Sliders and toggles in the top-right control panel let you adjust vertical
 exaggeration, terrain detail (screen-space error and tessellation), and
-which layers are visible (roads, kommune boundaries, buildings, forest).
-Distance sliders fine-tune the LOD switches for buildings and forest.
+which layers are visible (roads, kommune boundaries, buildings, forest,
+place labels). Distance sliders fine-tune the LOD switches for buildings
+and forest.
+
+The **place labels** toggle shows floating 8-bit-style name tags above
+towns, peaks, hills, and named lakes within 2 km of the camera (~30 m
+world size, 75 m above the terrain surface). Labels always draw on top of
+trees / water / buildings so they stay readable.
+
+A **road-trip panel** in the bottom-right lets you teleport to either end
+of the E39 (Mekjarvik or Egersund) and drive between them along the road
+at ~70 km/h, with an adjustable camera height (default 75 m). All UI panels
+are collapsible — click their headers to fold them out of the way; the state
+persists across reloads.
 
 The **Geology** subpanel (top-right) toggles three additional layers — Bedrock,
 Quaternary deposits, and Faults — sourced from NGU. Use the blend slider to fade
@@ -80,6 +92,8 @@ at that point.
 | `buildings.bin` | OSM building footprints + heights (BLD1 binary). |
 | `osm.bin` | Major roads + kommune boundaries (OSM2 binary). |
 | `water.bin` | Inland water-body mesh (WATR binary). |
+| `e39.bin` | E39 highway centreline between Mekjarvik and Egersund for the road-trip camera (E391 binary). |
+| `features.json` | Named towns / peaks / hills / lakes for the place-label sprites. |
 | `bedrock_raster.bin` + `bedrock_palette.json` | NGU bedrock raster overlay + palette (BRR1 binary, 50 m px). |
 | `quaternary_raster.bin` + `quaternary_palette.json` | NGU Quaternary deposits raster overlay + palette (QRR1 binary, 50 m px). |
 | `faults.bin` | NGU structural fault lines (FLT1 binary). |
@@ -98,6 +112,12 @@ want to rebuild from raw sources, the scripts in this folder do that:
 - `forest_polys.py` — builds canopy mesh + per-tree records from ESA
   WorldCover class 10.
 - `water_polys.py` — builds the inland-water mesh from WorldCover class 80.
+- `extract_e39.py` — pulls the E39 highway centreline from Overpass and
+  builds `e39.bin` for the road-trip camera.
+- `extract_named_features.py` — pulls named towns, peaks, hills, and lakes
+  from Overpass over the Rogaland DEM bbox and writes `features.json` for
+  the place-label sprites. Caches the raw Overpass response in
+  `features_raw.json`; delete it to force a re-fetch.
 - `geology_fetch.py` — pulls NGU bedrock + Quaternary + faults via WFS for the
   Rogaland bbox. Slow (tens of minutes) on first run; caches per-tile responses
   under `geology_cache/`. Requires `pyproj` in addition to the deps above.

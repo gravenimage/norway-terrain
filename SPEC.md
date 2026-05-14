@@ -322,6 +322,55 @@ The viewer is a single full-window WebGL canvas with two HUD overlays.
 - Roads/boundaries: drawn always (small geometry).
 - Water: per-cell frustum cull only; no fade.
 
+### 5.9 Road-trip camera
+
+A rail-guided camera mode follows the E39 highway centreline between
+Mekjarvik (north of Stavanger) and Egersund. Source data is
+`e39.bin` (E391 binary, produced by `extract_e39.py` from OSM
+`ref="E39"` ways, densified to ~25 m and height-sampled against the
+10 m DEM). The bottom-right panel exposes:
+
+- Teleport to either endpoint.
+- Drive (constant 70 km/h by default; speed slider 10–200 km/h).
+- Height slider (default 75 m above road; range 10–500 m).
+- Pause/stop returns control to MapControls in place.
+
+Drag-look adds yaw/pitch offsets that decay smoothly on release; the
+heading itself is low-pass-filtered with a 4 s time constant so the
+camera glides through roundabouts and OSM vertex kinks instead of
+snapping.
+
+### 5.10 Place-name labels
+
+Floating 8-bit-style name tags above named OSM features within 2 km of
+the camera. Source data is `features.json` (produced by
+`extract_named_features.py`) covering:
+
+- Settlements: `place=city|town|village|hamlet` with a `name`.
+- Terrain: `natural=peak` and `natural=hill` with a `name`. Peak Z
+  prefers the OSM `ele` tag when present, falling back to the DEM
+  sample.
+- Water: `natural=water` with a `name` (lakes; ways and relations are
+  reduced to their `out center` centroid).
+
+Features outside DEM coverage are dropped at extraction time. Each
+label is a `THREE.Sprite` with a per-label `CanvasTexture` rendered at
+small pixel size and sampled with `NearestFilter` for the chunky
+8-bit look. Per-kind text colour: white for settlements, warm tan for
+peaks/hills, cool blue for lakes; semi-translucent black background.
+
+- World height: 30 m (width scales with text aspect).
+- Vertical offset: 75 m above the terrain surface (tracks live
+  exaggeration).
+- Material: `transparent: true`, `opacity: 0.85`, `depthWrite: false`,
+  `depthTest: false`, `renderOrder = 999` — labels always draw last so
+  trees, canopy, water, and buildings never overpaint them. Side
+  effect: labels show through hills, which is intentional ("name tag"
+  UX).
+- Sprites materialise lazily the first time their feature enters the
+  2 km radius, so a 12 k-feature dataset doesn't allocate 12 k
+  textures up front.
+
 ---
 
 ## 6. Aesthetics
