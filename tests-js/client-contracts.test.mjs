@@ -286,3 +286,216 @@ test('app state notifies subscribers only when values change', async () => {
   assert.equal(changes.length, 1);
   assert.deepEqual(changes[0], { name: 'exag', previous: 1.4, value: 2 });
 });
+
+test('camera persistence preserves the existing p/t localStorage shape', async () => {
+  const { restoreCamera, saveCamera } = await import('../src/client/rendering/camera-persistence.js');
+  const writes = new Map();
+  const previousLocalStorage = globalThis.localStorage;
+  globalThis.localStorage = {
+    getItem(key) { return writes.get(key) ?? null; },
+    setItem(key, value) { writes.set(key, value); },
+  };
+
+  try {
+    const camera = { position: vectorStub([1, 2, 3]), updateMatrixWorldCalled: false, updateMatrixWorld() { this.updateMatrixWorldCalled = true; } };
+    const controls = { target: vectorStub([4, 5, 6]), updateCalled: false, update() { this.updateCalled = true; } };
+
+    saveCamera({ camera, controls, storageKey: 'viewer-camera' });
+    assert.deepEqual(JSON.parse(writes.get('viewer-camera')), { p: [1, 2, 3], t: [4, 5, 6] });
+
+    writes.set('viewer-camera', JSON.stringify({ p: [7, 8, 9], t: [10, 11, 12] }));
+    assert.equal(restoreCamera({ camera, controls, storageKey: 'viewer-camera' }), true);
+    assert.deepEqual(camera.position.values, [7, 8, 9]);
+    assert.deepEqual(controls.target.values, [10, 11, 12]);
+    assert.equal(camera.updateMatrixWorldCalled, true);
+    assert.equal(controls.updateCalled, true);
+
+    writes.set('viewer-camera', JSON.stringify({ position: [1, 2, 3], target: [4, 5, 6] }));
+    assert.equal(restoreCamera({ camera, controls, storageKey: 'viewer-camera' }), false);
+  } finally {
+    globalThis.localStorage = previousLocalStorage;
+  }
+});
+
+test('viewer scene factory preserves camera, renderer, controls, fog, and groups setup', async () => {
+  const { createViewerScene } = await import('../src/client/rendering/scene.js');
+  const previousWindow = globalThis.window;
+  const previousInnerWidth = globalThis.innerWidth;
+  const previousInnerHeight = globalThis.innerHeight;
+  globalThis.window = { devicePixelRatio: 3, innerWidth: 800, innerHeight: 600 };
+  globalThis.innerWidth = 800;
+  globalThis.innerHeight = 600;
+
+  try {
+    const THREE = createThreeStub();
+    class MapControls {
+      constructor(camera, domElement) {
+        this.camera = camera;
+        this.domElement = domElement;
+        this.target = new THREE.Vector3();
+      }
+      update() { this.updated = true; }
+      addEventListener() {}
+    }
+
+    const canvas = { tagName: 'CANVAS' };
+    const viewerScene = createViewerScene({ THREE, MapControls, canvas, meta: { size: 1000 } });
+
+    assert.equal(viewerScene.camera.fov, 55);
+    assert.equal(viewerScene.camera.near, 50);
+    assert.equal(viewerScene.camera.far, 4000);
+    assert.deepEqual(viewerScene.camera.position.values, [0, -120000, 90000]);
+    assert.equal(viewerScene.renderer.pixelRatio, 2);
+    assert.deepEqual(viewerScene.renderer.size, [800, 600]);
+    assert.equal(viewerScene.renderer.outputColorSpace, 'srgb');
+    assert.equal(viewerScene.scene.background.hex, 0x0c1322);
+    assert.deepEqual([viewerScene.scene.fog.near, viewerScene.scene.fog.far], [500, 1600]);
+    assert.equal(viewerScene.controls.enableDamping, true);
+    assert.equal(viewerScene.controls.dampingFactor, 0.08);
+    assert.deepEqual(Object.keys(viewerScene.groups).sort(), [
+      'amenitiesGroup',
+      'buildingsGroup',
+      'canopyGroup',
+      'faultsGroup',
+      'roadsGroup',
+      'townsGroup',
+      'treesGroup',
+      'water',
+    ]);
+    assert.equal(viewerScene.groups.faultsGroup.visible, false);
+
+    globalThis.window.innerWidth = 1024;
+    globalThis.window.innerHeight = 768;
+    globalThis.innerWidth = 1024;
+    globalThis.innerHeight = 768;
+    viewerScene.resize();
+    assert.equal(viewerScene.camera.aspect, 1024 / 768);
+    assert.deepEqual(viewerScene.renderer.size, [1024, 768]);
+    assert.equal(viewerScene.camera.projectionUpdated, true);
+  } finally {
+    globalThis.window = previousWindow;
+    globalThis.innerWidth = previousInnerWidth;
+    globalThis.innerHeight = previousInnerHeight;
+  }
+});
+
+test('compass factory preserves viewport rendering and camera orientation sync', async () => {
+  const { createCompass } = await import('../src/client/rendering/compass.js');
+  const previousDocument = globalThis.document;
+  const previousWindow = globalThis.window;
+  globalThis.window = { innerWidth: 1024, innerHeight: 768 };
+  globalThis.document = {
+    createElement(name) {
+      assert.equal(name, 'canvas');
+      return { width: 0, height: 0, getContext: () => ({ clearRect() {}, fillStyle: '', strokeStyle: '', lineWidth: 0, font: '', textAlign: '', textBaseline: '', strokeText() {}, fillText() {} }) };
+    },
+  };
+
+  try {
+    const calls = [];
+    const THREE = createThreeStub();
+    const renderer = {
+      autoClear: true,
+      setScissorTest(value) { calls.push(['setScissorTest', value]); },
+      setViewport(...args) { calls.push(['setViewport', ...args]); },
+      setScissor(...args) { calls.push(['setScissor', ...args]); },
+      clearDepth() { calls.push(['clearDepth']); },
+      render(scene, camera) { calls.push(['render', scene.type, camera.fov]); },
+    };
+    const camera = { quaternion: { marker: 'main' } };
+
+    const compass = createCompass({ THREE, renderer, camera });
+    compass.render();
+
+    assert.equal(renderer.autoClear, true);
+    assert.deepEqual(calls, [
+      ['setScissorTest', true],
+      ['setViewport', 16, 16, 140, 140],
+      ['setScissor', 16, 16, 140, 140],
+      ['clearDepth'],
+      ['render', 'Scene', 35],
+      ['setScissorTest', false],
+      ['setViewport', 0, 0, globalThis.window.innerWidth, globalThis.window.innerHeight],
+    ]);
+  } finally {
+    globalThis.document = previousDocument;
+    globalThis.window = previousWindow;
+  }
+});
+
+function vectorStub(initial = [0, 0, 0]) {
+  return {
+    values: [...initial],
+    set(x, y, z) { this.values = [x, y, z]; return this; },
+    fromArray(values) { this.values = [...values]; return this; },
+    toArray() { return [...this.values]; },
+  };
+}
+
+function createThreeStub() {
+  class Vector3 {
+    constructor(x = 0, y = 0, z = 0) { this.values = [x, y, z]; }
+    set(x, y, z) { this.values = [x, y, z]; return this; }
+    clone() { return new Vector3(...this.values); }
+    normalize() { return this; }
+    copy(other) { this.values = [...other.values]; return this; }
+    multiplyScalar(scalar) { this.values = this.values.map((value) => value * scalar); return this; }
+    applyQuaternion() { return this; }
+  }
+  class Color { constructor(hex) { this.hex = hex; } }
+  class Fog { constructor(hex, near, far) { this.hex = hex; this.near = near; this.far = far; } }
+  class Scene { constructor() { this.children = []; this.type = 'Scene'; } add(child) { this.children.push(child); } }
+  class PerspectiveCamera {
+    constructor(fov, aspect, near, far) { this.fov = fov; this.aspect = aspect; this.near = near; this.far = far; this.up = new Vector3(); this.position = new Vector3(); this.quaternion = { copy(other) { this.source = other; } }; }
+    updateProjectionMatrix() { this.projectionUpdated = true; }
+    updateMatrixWorld() { this.matrixWorldUpdated = true; }
+  }
+  class WebGLRenderer {
+    constructor(options) { this.options = options; this.domElement = options.canvas || {}; this.autoClear = true; }
+    setPixelRatio(value) { this.pixelRatio = value; }
+    setSize(width, height) { this.size = [width, height]; }
+  }
+  class Group { constructor() { this.children = []; this.visible = true; } add(child) { this.children.push(child); } }
+  class Mesh { constructor(geometry, material) { this.geometry = geometry; this.material = material; this.position = new Vector3(); } }
+  class PlaneGeometry { constructor(width, height) { this.width = width; this.height = height; } }
+  class MeshBasicMaterial { constructor(options) { this.options = options; } }
+  class AmbientLight { constructor(color, intensity) { this.color = color; this.intensity = intensity; } }
+  class DirectionalLight { constructor(color, intensity) { this.color = color; this.intensity = intensity; this.position = new Vector3(); } }
+  class Shape { moveTo() {} lineTo() {} }
+  class ExtrudeGeometry { constructor(shape, options) { this.shape = shape; this.options = options; } }
+  class DataTexture { constructor(...args) { this.args = args; } }
+  class MeshToonMaterial { constructor(options) { this.options = options; } }
+  class EdgesGeometry { constructor(geometry, threshold) { this.geometry = geometry; this.threshold = threshold; } }
+  class LineBasicMaterial { constructor(options) { this.options = options; } }
+  class LineSegments { constructor(geometry, material) { this.geometry = geometry; this.material = material; } }
+  class CanvasTexture { constructor(canvas) { this.canvas = canvas; } }
+  class SpriteMaterial { constructor(options) { this.options = options; } }
+  class Sprite { constructor(material) { this.material = material; this.scale = new Vector3(); this.position = new Vector3(); } }
+  return {
+    Vector3,
+    Color,
+    Fog,
+    Scene,
+    PerspectiveCamera,
+    WebGLRenderer,
+    Group,
+    Mesh,
+    PlaneGeometry,
+    MeshBasicMaterial,
+    AmbientLight,
+    DirectionalLight,
+    Shape,
+    ExtrudeGeometry,
+    DataTexture,
+    MeshToonMaterial,
+    EdgesGeometry,
+    LineBasicMaterial,
+    LineSegments,
+    CanvasTexture,
+    SpriteMaterial,
+    Sprite,
+    SRGBColorSpace: 'srgb',
+    RGBAFormat: 'rgba',
+    NearestFilter: 'nearest',
+  };
+}
