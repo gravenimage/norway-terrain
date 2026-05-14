@@ -63,15 +63,21 @@ test('core UI controls mutate the same visible state used by the monolith', asyn
     input.dispatchEvent(new Event('input', { bubbles: true }));
   });
   await page.locator('#showRoads').uncheck();
-  await page.locator('#showBld').uncheck();
-  await page.locator('#showTrees').uncheck();
-  await page.locator('#cb-contours').check();
+  await page.locator('#showTowns').uncheck();
   await page.evaluate(() => {
     const geologyPanel = document.getElementById('geo-panel');
     if (geologyPanel instanceof HTMLDetailsElement) {
       geologyPanel.open = true;
     }
+    const contourPanel = document.getElementById('contour-panel');
+    if (contourPanel instanceof HTMLDetailsElement) {
+      contourPanel.open = true;
+    }
   });
+  await page.locator('#cb-faults').check();
+  await page.locator('#showBld').uncheck();
+  await page.locator('#showTrees').uncheck();
+  await page.locator('#cb-contours').check();
   await page.locator('#cb-bedrock').check();
   await page.locator('#cb-quat').check();
   await page.locator('#r-geo-blend').evaluate((input) => {
@@ -82,6 +88,8 @@ test('core UI controls mutate the same visible state used by the monolith', asyn
   const state = await page.evaluate(() => ({
     exagLabel: document.getElementById('exagv')?.textContent,
     roadsChecked: document.getElementById('showRoads')?.checked,
+    townsChecked: document.getElementById('showTowns')?.checked,
+    faultsChecked: document.getElementById('cb-faults')?.checked,
     buildingsChecked: document.getElementById('showBld')?.checked,
     treesChecked: document.getElementById('showTrees')?.checked,
     contoursChecked: document.getElementById('cb-contours')?.checked,
@@ -94,6 +102,8 @@ test('core UI controls mutate the same visible state used by the monolith', asyn
 
   assert.equal(state.exagLabel, '2.00');
   assert.equal(state.roadsChecked, false);
+  assert.equal(state.townsChecked, false);
+  assert.equal(state.faultsChecked, true);
   assert.equal(state.buildingsChecked, false);
   assert.equal(state.treesChecked, false);
   assert.equal(state.contoursChecked, true);

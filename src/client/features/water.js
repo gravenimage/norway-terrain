@@ -34,3 +34,35 @@ export function parseWaterBuffer(buffer) {
   }
   return { version, nCells, cells, totalTris };
 }
+
+export function createWaterSystem({ THREE, scene, waterUniforms, waterMaterial }) {
+  const waterGroup = THREE.Group ? new THREE.Group() : { add() {} };
+  const waterCells = [];
+  if (scene && scene.add) scene.add(waterGroup);
+
+  return {
+    async load() {
+      try {
+        const ab = await (await fetch('water.bin')).arrayBuffer();
+        const parsed = parseWaterBuffer(ab);
+        for (const { kx, ky, cx, cy, czMin, czMax, radius, verts, indices } of parsed.cells) {
+          const geom = new THREE.BufferGeometry();
+          geom.setAttribute('position', new THREE.BufferAttribute(verts, 3));
+          geom.setIndex(new THREE.BufferAttribute(indices, 1));
+          const mesh = new THREE.Mesh(geom, waterMaterial);
+          mesh.frustumCulled = false;
+          mesh.renderOrder = 0;
+          waterGroup.add(mesh);
+          waterCells.push({ mesh, cx, cy, czMin, czMax, radius, kx, ky });
+        }
+        document.getElementById('hud').insertAdjacentHTML('beforeend',
+          `<br>water: ${parsed.nCells} cells, ${parsed.totalTris.toLocaleString()} tris`);
+      } catch (e) {
+        console.warn('water.bin not loaded:', e);
+      }
+    },
+    setExaggeration(value) {
+      waterUniforms.uExag.value = value;
+    },
+  };
+}

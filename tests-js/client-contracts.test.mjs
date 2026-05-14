@@ -88,11 +88,71 @@ test('binary parser modules expose explicit contracts', async () => {
   assert.equal(typeof forest.parseForestBuffer, 'function');
   assert.equal(typeof canopy.parseCanopyBuffer, 'function');
   assert.equal(typeof water.parseWaterBuffer, 'function');
+  assert.equal(typeof water.createWaterSystem, 'function');
   assert.equal(typeof amenities.parseAmenitiesBuffer, 'function');
   assert.equal(typeof roads.parseRoadsBuffer, 'function');
+  assert.equal(typeof roads.createRoadSystem, 'function');
   assert.equal(typeof geology.parseGeologyRasterBuffer, 'function');
   assert.equal(typeof geology.createGeologySystem, 'function');
   assert.equal(typeof faults.parseFaultsBuffer, 'function');
+  assert.equal(typeof faults.createFaultSystem, 'function');
+});
+
+test('road system exposes stateful overlay API and mutates shared uniforms and groups', async () => {
+  const { createRoadSystem } = await import('../src/client/overlays/roads.js');
+  const roadUniforms = { uRoadShow: { value: 1.0 } };
+  const overlayUniforms = { uExag: { value: 1.4 }, uOffset: { value: 12.0 } };
+  const townsGroup = { visible: true };
+  const roadsGroup = { visible: true };
+
+  const system = createRoadSystem({
+    THREE: {},
+    scene: {},
+    roadUniforms,
+    overlayUniforms,
+    roadsGroup,
+    townsGroup,
+  });
+
+  assert.deepEqual(Object.keys(system).sort(), [
+    'load',
+    'setDrapeOffset',
+    'setExaggeration',
+    'setRoadsVisible',
+    'setTownsVisible',
+  ]);
+  system.setRoadsVisible(false);
+  system.setTownsVisible(false);
+  system.setExaggeration(2.0);
+  system.setDrapeOffset(8.5);
+
+  assert.equal(roadUniforms.uRoadShow.value, 0.0);
+  assert.equal(roadsGroup.visible, false);
+  assert.equal(townsGroup.visible, false);
+  assert.equal(overlayUniforms.uExag.value, 2.0);
+  assert.equal(overlayUniforms.uOffset.value, 8.5);
+});
+
+test('fault system exposes stateful overlay API and mutates group visibility', async () => {
+  const { createFaultSystem } = await import('../src/client/overlays/faults.js');
+  const faultsGroup = { visible: false };
+  const system = createFaultSystem({ THREE: {}, scene: {}, faultsGroup });
+
+  assert.deepEqual(Object.keys(system).sort(), ['load', 'setVisible']);
+  system.setVisible(true);
+  assert.equal(faultsGroup.visible, true);
+  system.setVisible(false);
+  assert.equal(faultsGroup.visible, false);
+});
+
+test('water system exposes stateful overlay API and mutates shared uniforms', async () => {
+  const { createWaterSystem } = await import('../src/client/features/water.js');
+  const waterUniforms = { uExag: { value: 1.4 } };
+  const system = createWaterSystem({ THREE: {}, scene: {}, waterUniforms, waterMaterial: {} });
+
+  assert.deepEqual(Object.keys(system).sort(), ['load', 'setExaggeration']);
+  system.setExaggeration(2.25);
+  assert.equal(waterUniforms.uExag.value, 2.25);
 });
 
 test('geology system exposes stateful overlay API and mutates shared uniforms', async () => {
