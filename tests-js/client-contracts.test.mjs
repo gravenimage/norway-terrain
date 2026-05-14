@@ -60,3 +60,36 @@ test('shader modules expose non-empty GLSL source', async () => {
   assert.ok(terrain.fragmentShader.includes('uHeight'));
   assert.ok(terrain.fragmentShader.includes('uExag'));
 });
+
+test('binary parser modules expose explicit contracts', async () => {
+  const buildings = await import('../src/client/features/buildings.js');
+  const forest = await import('../src/client/features/forest.js');
+  const canopy = await import('../src/client/features/canopy.js');
+  const water = await import('../src/client/features/water.js');
+  const amenities = await import('../src/client/features/amenities.js');
+  const roads = await import('../src/client/overlays/roads.js');
+  const geology = await import('../src/client/overlays/geology.js');
+  const faults = await import('../src/client/overlays/faults.js');
+
+  // Magic strings mirror the binary headers checked inline by viewer.html before parser extraction.
+  assert.equal(buildings.BUILDING_CONTRACT.magic, 'BLD1');
+  assert.equal(forest.FOREST_CONTRACT.magic[0], 'TRE1');
+  assert.equal(forest.FOREST_CONTRACT.magic[1], 'TRE2');
+  assert.equal(canopy.CANOPY_CONTRACT.magic, 'CANO');
+  assert.equal(water.WATER_CONTRACT.magic, 'WATR');
+  assert.equal(amenities.AMENITIES_CONTRACT.magic, 'AMN1');
+  assert.equal(roads.ROAD_CONTRACT.magic, 'OSM2');
+  assert.equal(geology.GEOLOGY_RASTER_CONTRACT.bedrockMagic, 'BRR1');
+  assert.equal(geology.GEOLOGY_RASTER_CONTRACT.quaternaryMagic, 'QRR1');
+  assert.equal(faults.FAULT_CONTRACT.magic, 'FLT1');
+
+  // Function names document the pure parser API consumed by viewer.html.
+  assert.equal(typeof buildings.parseBuildingsBuffer, 'function');
+  assert.equal(typeof forest.parseForestBuffer, 'function');
+  assert.equal(typeof canopy.parseCanopyBuffer, 'function');
+  assert.equal(typeof water.parseWaterBuffer, 'function');
+  assert.equal(typeof amenities.parseAmenitiesBuffer, 'function');
+  assert.equal(typeof roads.parseRoadsBuffer, 'function');
+  assert.equal(typeof geology.parseGeologyRasterBuffer, 'function');
+  assert.equal(typeof faults.parseFaultsBuffer, 'function');
+});

@@ -99,6 +99,14 @@ import {
   createTreeMaterial,
   createWaterMaterial,
 } from './src/client/rendering/material-factory.js';
+import { parseAmenitiesBuffer } from './src/client/features/amenities.js';
+import { parseBuildingsBuffer } from './src/client/features/buildings.js';
+import { parseCanopyBuffer } from './src/client/features/canopy.js';
+import { parseForestBuffer } from './src/client/features/forest.js';
+import { parseWaterBuffer } from './src/client/features/water.js';
+import { parseFaultsBuffer } from './src/client/overlays/faults.js';
+import { parseGeologyRasterBuffer } from './src/client/overlays/geology.js';
+import { parseRoadsBuffer } from './src/client/overlays/roads.js';
 
 const {
   buildBenchGeom,
@@ -380,61 +388,25 @@ function buildRoadOverlay(segsByClass){
 (async () => {
   try {
     const ab = await (await fetch('osm.bin')).arrayBuffer();
-    const dv = new DataView(ab);
-    const magic = String.fromCharCode(dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3));
-    if (magic !== 'OSM2') throw new Error('bad magic ' + magic);
-    let off = 4;
-    const nGroups = dv.getUint32(off, true); off += 4;
-    /* centerX */ dv.getFloat64(off, true); off += 8;
-    /* centerY */ dv.getFloat64(off, true); off += 8;
-    let totalSegs = 0, townSegs = 0;
-    // Collect per-class segments (x0,y0,x1,y1 quads) for the shader overlay.
-    const segsByClass = [[], [], [], [], []];
-    for (let g = 0; g < nGroups; g++) {
-      const cls = dv.getUint8(off); off += 4; // 1 byte cls + 3 pad
-      const n = dv.getUint32(off, true); off += 4;
-      // n is even (LineSegments pair vertices)
-      const verts = new Float32Array(ab, off, n * 3);
-      off += n * 3 * 4;
-      if (cls === 5) {
-        // Kommune boundaries: still drawn as actual line segments.
-        const geom = new THREE.BufferGeometry();
-        geom.setAttribute('position', new THREE.BufferAttribute(verts, 3));
-        const mat = makeLineMaterial(TOWN_COLOR);
-        const ls = new THREE.LineSegments(geom, mat);
-        ls.frustumCulled = false;
-        ls.renderOrder = 11;
-        townsGroup.add(ls);
-        townSegs += n / 2;
-      } else if (cls >= 0 && cls <= 4) {
-        // Roads: extract (x0,y0,x1,y1) pairs for the shader spatial index.
-        const m = (n / 2) | 0;
-        const out = new Float32Array(m * 4);
-        for (let k = 0; k < m; k++) {
-          out[k*4 + 0] = verts[k*6 + 0];
-          out[k*4 + 1] = verts[k*6 + 1];
-          out[k*4 + 2] = verts[k*6 + 3];
-          out[k*4 + 3] = verts[k*6 + 4];
-        }
-        segsByClass[cls] = segsByClass[cls].length
-          ? Float32Concat(segsByClass[cls], out) : out;
-        totalSegs += m;
-      }
+    const parsed = parseRoadsBuffer(ab);
+    for (const { verts } of parsed.townGroups) {
+      // Kommune boundaries: still drawn as actual line segments.
+      const geom = new THREE.BufferGeometry();
+      geom.setAttribute('position', new THREE.BufferAttribute(verts, 3));
+      const mat = makeLineMaterial(TOWN_COLOR);
+      const ls = new THREE.LineSegments(geom, mat);
+      ls.frustumCulled = false;
+      ls.renderOrder = 11;
+      townsGroup.add(ls);
     }
-    buildRoadOverlay(segsByClass);
+    buildRoadOverlay(parsed.segsByClass);
     overlayUniforms.uExag.value = EXAG;
     document.getElementById('hud').insertAdjacentHTML('beforeend',
-      `<br>roads: ${totalSegs.toLocaleString()} segs · kommune: ${townSegs.toLocaleString()} segs`);
+      `<br>roads: ${parsed.totalSegs.toLocaleString()} segs · kommune: ${parsed.townSegs.toLocaleString()} segs`);
   } catch (e) {
     console.warn('osm.bin not loaded:', e);
   }
 })();
-
-function Float32Concat(a, b) {
-  const out = new Float32Array(a.length + b.length);
-  out.set(a, 0); out.set(b, a.length);
-  return out;
-}
 
 // ---------- Buildings (stylized Norwegian houses + apartments) ----------
 // 12-colour palette: 0..4 house wood, 5..7 apartments, 8..10 commercial, 11 cabin brown
@@ -481,27 +453,7 @@ const buildingCells = []; // { mesh, cx, cy, radius }
 (async () => {
   try {
     const ab = await (await fetch('buildings.bin')).arrayBuffer();
-    const dv = new DataView(ab);
-    const magic = String.fromCharCode(dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3));
-    if (magic !== 'BLD1') throw new Error('bad magic ' + magic);
-    const n = dv.getUint32(4, true);
-    const REC = 32; // 7 floats + 4 bytes
-    const dataOff = 8;
-    // First pass: scan into typed arrays + bin into 8 km cells
-    const CELL = 8000;
-    const bins = new Map();
-    const tmp = new DataView(ab, dataOff);
-    for (let i = 0; i < n; i++){
-      const o = i * REC;
-      const cx = tmp.getFloat32(o + 0, true);
-      const cy = tmp.getFloat32(o + 4, true);
-      const gx = Math.floor(cx / CELL);
-      const gy = Math.floor(cy / CELL);
-      const k = gx * 100000 + gy;
-      let arr = bins.get(k);
-      if (!arr) { arr = []; bins.set(k, arr); }
-      arr.push(i);
-    }
+    const { n, records, bins } = parseBuildingsBuffer(ab);
     const houseGeom = makeHouseGeometry();
     let totalCells = 0;
     for (const [, idxArr] of bins){
@@ -515,17 +467,17 @@ const buildingCells = []; // { mesh, cx, cy, radius }
       const iRoofH = new Float32Array(m);
       let bxMin = Infinity, byMin = Infinity, bxMax = -Infinity, byMax = -Infinity;
       for (let k = 0; k < m; k++){
-        const o = idxArr[k] * REC;
-        const cx = tmp.getFloat32(o + 0, true);
-        const cy = tmp.getFloat32(o + 4, true);
-        const bz = tmp.getFloat32(o + 8, true);
-        const L  = tmp.getFloat32(o + 12, true);
-        const W  = tmp.getFloat32(o + 16, true);
-        const H  = tmp.getFloat32(o + 20, true);
-        const a  = tmp.getFloat32(o + 24, true);
-        const t  = tmp.getUint8(o + 28);
-        const rf = tmp.getUint8(o + 29);
-        const ci = tmp.getUint8(o + 30);
+        const idx = idxArr[k];
+        const cx = records.cx[idx];
+        const cy = records.cy[idx];
+        const bz = records.bz[idx];
+        const L  = records.length[idx];
+        const W  = records.width[idx];
+        const H  = records.height[idx];
+        const a  = records.angle[idx];
+        const t  = records.type[idx];
+        const rf = records.roof[idx];
+        const ci = records.color[idx];
         iPos[k*3+0] = cx; iPos[k*3+1] = cy; iPos[k*3+2] = bz;
         iSize[k*3+0] = L; iSize[k*3+1] = W; iSize[k*3+2] = H;
         iRot[k] = a;
@@ -771,34 +723,19 @@ function _amHash(x, y){
   let ab;
   try { ab = await (await fetch('amenities.bin')).arrayBuffer(); }
   catch (e) { console.warn('amenities.bin not loaded:', e); return; }
-  if (ab.byteLength < 8) { console.warn('amenities.bin too small'); return; }
-  const dv = new DataView(ab);
-  const magic = String.fromCharCode(dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3));
-  if (magic !== 'AMN1'){ console.warn('amenities.bin bad magic ' + magic); return; }
+  let parsed;
+  try { parsed = parseAmenitiesBuffer(ab); }
+  catch (e) { console.warn(e.message); return; }
 
   // ---- AREAS ----
-  const nAreas = dv.getUint32(4, true);
-  let off = 8;
+  const { nAreas, areas, points } = parsed;
   const areasByType = new Map();
-  for (let i = 0; i < nAreas; i++){
-    const tid = dv.getUint16(off, true); off += 2;
-    const nv  = dv.getUint16(off, true); off += 2;
-    /* baseZ */ dv.getFloat32(off, true); off += 4;
-    const positions = new Float32Array(nv * 3);
-    const ring2d = new Array(nv);
-    for (let v = 0; v < nv; v++){
-      const x = dv.getFloat32(off,     true);
-      const y = dv.getFloat32(off + 4, true);
-      const z = dv.getFloat32(off + 8, true);
-      off += 12;
-      positions[v*3+0] = x;
-      positions[v*3+1] = y;
-      positions[v*3+2] = z;
-      ring2d[v] = new THREE.Vector2(x, y);
-    }
+  for (const area of areas){
+    const { tid, positions, ring2d } = area;
+    const shape = ring2d.map(([x, y]) => new THREE.Vector2(x, y));
     let tris;
     try {
-      tris = THREE.ShapeUtils.triangulateShape(ring2d, []);
+      tris = THREE.ShapeUtils.triangulateShape(shape, []);
     } catch (e) { continue; }
     if (!tris || !tris.length) continue;
     let arr = areasByType.get(tid);
@@ -847,15 +784,9 @@ function _amHash(x, y){
   }
 
   // ---- POINTS ----
-  const nPoints = dv.getUint32(off, true); off += 4;
   const buckets = new Array(PROP_BUILDERS.length);
   for (let i = 0; i < PROP_BUILDERS.length; i++) buckets[i] = [];
-  for (let i = 0; i < nPoints; i++){
-    const tid = dv.getUint16(off, true);
-    const x = dv.getFloat32(off + 4, true);
-    const y = dv.getFloat32(off + 8, true);
-    const z = dv.getFloat32(off + 12, true);
-    off += 16;
+  for (const { tid, x, y, z } of points){
     if (tid >= 0 && tid < buckets.length) buckets[tid].push(x, y, z);
   }
   let totalProps = 0;
@@ -959,30 +890,8 @@ const canopyCells = [];
 (async () => {
   try {
     const ab = await (await fetch('canopy.bin')).arrayBuffer();
-    const dv = new DataView(ab);
-    const magic = String.fromCharCode(dv.getUint8(0),dv.getUint8(1),dv.getUint8(2),dv.getUint8(3));
-    if (magic !== 'CANO') throw new Error('bad canopy magic ' + magic);
-    const ver = dv.getUint32(4, true);
-    const nCells = dv.getUint32(8, true);
-    let off = 12;
-    let totalTris = 0;
-    for (let i = 0; i < nCells; i++){
-      const kx     = dv.getInt32(off, true);   off += 4;
-      const ky     = dv.getInt32(off, true);   off += 4;
-      const cx     = dv.getFloat32(off, true); off += 4;
-      const cy     = dv.getFloat32(off, true); off += 4;
-      const czMin  = dv.getFloat32(off, true); off += 4;
-      const czMax  = dv.getFloat32(off, true); off += 4;
-      const radius = dv.getFloat32(off, true); off += 4;
-      const nV     = dv.getUint32(off, true);  off += 4;
-      const nT     = dv.getUint32(off, true);  off += 4;
-      // copy out so the master ArrayBuffer can be GC'd
-      const verts   = new Float32Array(ab, off, nV * 3).slice();
-      off += nV * 12;
-      const indices = new Uint16Array(ab, off, nT * 3).slice();
-      off += nT * 6;
-      if ((nT * 3) & 1) off += 2;
-
+    const parsed = parseCanopyBuffer(ab);
+    for (const { kx, ky, cx, cy, czMin, czMax, radius, verts, indices } of parsed.cells){
       const geom = new THREE.BufferGeometry();
       geom.setAttribute('position', new THREE.BufferAttribute(verts, 3));
       geom.setIndex(new THREE.BufferAttribute(indices, 1));
@@ -991,10 +900,9 @@ const canopyCells = [];
       mesh.renderOrder = 1;
       canopyGroup.add(mesh);
       canopyCells.push({ mesh, cx, cy, czMin, czMax, radius, kx, ky });
-      totalTris += nT;
     }
     document.getElementById('hud').insertAdjacentHTML('beforeend',
-      `<br>canopy: ${nCells} cells, ${totalTris.toLocaleString()} tris`);
+      `<br>canopy: ${parsed.nCells} cells, ${parsed.totalTris.toLocaleString()} tris`);
   } catch (e) {
     console.warn('canopy.bin not loaded:', e);
   }
@@ -1014,29 +922,8 @@ const waterCells = [];
 (async () => {
   try {
     const ab = await (await fetch('water.bin')).arrayBuffer();
-    const dv = new DataView(ab);
-    const magic = String.fromCharCode(dv.getUint8(0),dv.getUint8(1),dv.getUint8(2),dv.getUint8(3));
-    if (magic !== 'WATR') throw new Error('bad water magic ' + magic);
-    const ver = dv.getUint32(4, true);
-    const nCells = dv.getUint32(8, true);
-    let off = 12;
-    let totalTris = 0;
-    for (let i = 0; i < nCells; i++){
-      const kx     = dv.getInt32(off, true);   off += 4;
-      const ky     = dv.getInt32(off, true);   off += 4;
-      const cx     = dv.getFloat32(off, true); off += 4;
-      const cy     = dv.getFloat32(off, true); off += 4;
-      const czMin  = dv.getFloat32(off, true); off += 4;
-      const czMax  = dv.getFloat32(off, true); off += 4;
-      const radius = dv.getFloat32(off, true); off += 4;
-      const nV     = dv.getUint32(off, true);  off += 4;
-      const nT     = dv.getUint32(off, true);  off += 4;
-      const verts   = new Float32Array(ab, off, nV * 3).slice();
-      off += nV * 12;
-      const indices = new Uint16Array(ab, off, nT * 3).slice();
-      off += nT * 6;
-      if ((nT * 3) & 1) off += 2;
-
+    const parsed = parseWaterBuffer(ab);
+    for (const { kx, ky, cx, cy, czMin, czMax, radius, verts, indices } of parsed.cells){
       const geom = new THREE.BufferGeometry();
       geom.setAttribute('position', new THREE.BufferAttribute(verts, 3));
       geom.setIndex(new THREE.BufferAttribute(indices, 1));
@@ -1045,10 +932,9 @@ const waterCells = [];
       mesh.renderOrder = 0;
       waterGroup.add(mesh);
       waterCells.push({ mesh, cx, cy, czMin, czMax, radius, kx, ky });
-      totalTris += nT;
     }
     document.getElementById('hud').insertAdjacentHTML('beforeend',
-      `<br>water: ${nCells} cells, ${totalTris.toLocaleString()} tris`);
+      `<br>water: ${parsed.nCells} cells, ${parsed.totalTris.toLocaleString()} tris`);
   } catch (e) {
     console.warn('water.bin not loaded:', e);
   }
@@ -1061,31 +947,7 @@ const treeCells = [];
 (async () => {
   try {
     const ab = await (await fetch('forest.bin')).arrayBuffer();
-    const dv = new DataView(ab);
-    const magic = String.fromCharCode(dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3));
-    if (magic !== 'TRE1' && magic !== 'TRE2') throw new Error('bad magic ' + magic);
-    const TRE2 = (magic === 'TRE2');
-    const n = dv.getUint32(4, true);
-    // TRE1: 20 B (cx,cy,cz,h,sp,sj,cj,pad). TRE2: 24 B (adds 4 int8 corner-z deltas
-    // d00,d10,d01,d11 in 0.5 m units, used to bilinear-interp per-tree z and
-    // avoid horizontal "tree shelves" on steep slopes).
-    const REC = TRE2 ? 24 : 20;
-    const dataOff = 8;
-    const tmp = new DataView(ab, dataOff);
-    // bin into 4 km cells
-    const CELL = 4000;
-    const bins = new Map();
-    for (let i = 0; i < n; i++){
-      const o = i * REC;
-      const cx = tmp.getFloat32(o + 0, true);
-      const cy = tmp.getFloat32(o + 4, true);
-      const gx = Math.floor(cx / CELL);
-      const gy = Math.floor(cy / CELL);
-      const k = gx * 100000 + gy;
-      let arr = bins.get(k);
-      if (!arr) { arr = []; bins.set(k, arr); }
-      arr.push(i);
-    }
+    const { n, records, bins } = parseForestBuffer(ab);
     const treeGeom = makeTreeGeometry();
     // Procedural densification: each forest quad has ONE seed at its centre;
     // we scatter K trees uniformly across the 48 m quad → ~24 m effective spacing,
@@ -1116,19 +978,18 @@ const treeCells = [];
       let wi = 0;
       for (let k = 0; k < m; k++){
         const seedIdx = idxArr[k];
-        const o = seedIdx * REC;
-        const cx0 = tmp.getFloat32(o + 0, true);
-        const cy0 = tmp.getFloat32(o + 4, true);
-        const bz0 = tmp.getFloat32(o + 8, true);
-        const h0  = tmp.getFloat32(o + 12, true);
-        const sp  = tmp.getUint8(o + 16);
-        const sj  = tmp.getUint8(o + 17);
-        const cj  = tmp.getUint8(o + 18);
-        // TRE2 corner-z deltas (0.5 m units), int8 - or 0 if TRE1 (no deltas):
-        const d00 = TRE2 ? tmp.getInt8(o + 20) * 0.5 : 0;
-        const d10 = TRE2 ? tmp.getInt8(o + 21) * 0.5 : 0;
-        const d01 = TRE2 ? tmp.getInt8(o + 22) * 0.5 : 0;
-        const d11 = TRE2 ? tmp.getInt8(o + 23) * 0.5 : 0;
+        const cx0 = records.cx[seedIdx];
+        const cy0 = records.cy[seedIdx];
+        const bz0 = records.bz[seedIdx];
+        const h0  = records.height[seedIdx];
+        const sp  = records.species[seedIdx];
+        const sj  = records.sizeJitter[seedIdx];
+        const cj  = records.colorJitter[seedIdx];
+        // TRE2 corner-z deltas (0.5 m units), or 0 if TRE1 (no deltas):
+        const d00 = records.d00[seedIdx];
+        const d10 = records.d10[seedIdx];
+        const d01 = records.d01[seedIdx];
+        const d11 = records.d11[seedIdx];
         const aspect = TREE_ASPECT[sp] || 0.4;
         const A = TREE_PAL[sp] || TREE_PAL[0];
         const B = TREE_PAL_DARK[sp] || TREE_PAL_DARK[0];
@@ -1470,22 +1331,15 @@ async function _loadGeologyRaster(binUrl, paletteUrl, magic) {
     if (jr.ok) lookupObj = await jr.json();
   } catch {}
 
-  const dv = new DataView(buf);
-  const tag = String.fromCharCode(dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3));
-  if (tag !== magic) {
-    console.warn(`${binUrl}: bad magic ${tag}, expected ${magic}`);
+  let parsed;
+  try {
+    parsed = parseGeologyRasterBuffer(buf, magic);
+  } catch (e) {
+    console.warn(`${binUrl}: ${e.message}`);
     return null;
   }
-  const ver = dv.getUint32(4, true);
-  const w = dv.getUint32(8, true);
-  const h = dv.getUint32(12, true);
-  const xMin = dv.getFloat32(16, true);
-  const yMin = dv.getFloat32(20, true);
-  const xMax = dv.getFloat32(24, true);
-  const yMax = dv.getFloat32(28, true);
-  const ids = new Uint16Array(buf, 32, w * h);
+  const { w, h, ids, rgBytes, bbox } = parsed;
   // RG-packed (uint16 low byte in R, high byte in G) view for the GPU
-  const rgBytes = new Uint8Array(buf, 32, w * h * 2);
   const tex = new THREE.DataTexture(rgBytes, w, h, THREE.RGFormat, THREE.UnsignedByteType);
   tex.minFilter = THREE.NearestFilter;
   tex.magFilter = THREE.NearestFilter;
@@ -1496,7 +1350,7 @@ async function _loadGeologyRaster(binUrl, paletteUrl, magic) {
   const palInfo = _buildPaletteTex(lookupObj);
   console.log(`${binUrl}: ${w}x${h} raster, palette N=${palInfo.N}`);
   return {
-    w, h, ids, bbox: { xMin, yMin, xMax, yMax },
+    w, h, ids, bbox,
     tex, paletteTex: palInfo.tex, paletteN: palInfo.N,
     lookup: lookupObj,
   };
@@ -1549,16 +1403,10 @@ const faultMat = new THREE.LineBasicMaterial({ color: 0xe040c0, transparent: tru
     if (!r.ok) throw new Error(`HTTP ${r.status}`);
     buf = await r.arrayBuffer();
   } catch (e) { console.warn('faults.bin not loaded:', e.message); return; }
-  const dv = new DataView(buf);
-  const tag = String.fromCharCode(dv.getUint8(0), dv.getUint8(1), dv.getUint8(2), dv.getUint8(3));
-  if (tag !== 'FLT1') { console.warn('bad faults magic', tag); return; }
-  let off = 4;
-  const nGroups = dv.getUint32(off, true); off += 4;
-  let totalSegs = 0;
-  for (let g = 0; g < nGroups; g++) {
-    const typeIdx = dv.getUint8(off); off += 4;
-    const nVerts = dv.getUint32(off, true); off += 4;
-    const verts = new Float32Array(buf, off, nVerts * 3); off += nVerts * 12;
+  let parsed;
+  try { parsed = parseFaultsBuffer(buf); }
+  catch (e) { console.warn('bad faults magic', e.message.replace('bad faults magic ', '')); return; }
+  for (const { nVerts, verts } of parsed.groups) {
     const positions = new Float32Array(verts.length);
     for (let i = 0; i < nVerts; i++) {
       positions[i*3]   = verts[i*3];
@@ -1571,9 +1419,8 @@ const faultMat = new THREE.LineBasicMaterial({ color: 0xe040c0, transparent: tru
     seg.frustumCulled = false;
     seg.renderOrder = 12;
     faultsGroup.add(seg);
-    totalSegs += nVerts / 2;
   }
-  console.log(`faults: ${totalSegs} segments`);
+  console.log(`faults: ${parsed.totalSegs} segments`);
 })();
 // ---------------- end faults layer -----------------
 
