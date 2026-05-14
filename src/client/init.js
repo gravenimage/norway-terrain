@@ -43,6 +43,7 @@ import { attachControls } from './ui/controls.js';
 import { createPlacementObstacles } from './placement/obstacles.js';
 import { createRoadTripSystem } from './features/roadtrip.js';
 import { attachRoadTripPanel } from './ui/roadtrip-panel.js';
+import { createLabelSystem } from './features/labels.js';
 
 
 /**
@@ -474,7 +475,16 @@ export async function initializeViewer({ THREE, MapControls }) {
   });
   
   const compass = createCompass({ THREE, renderer, camera });
-  
+
+  // Named-feature labels (towns / peaks / hills / lakes). Loads features.json and creates
+  // sprites lazily as the camera approaches each feature; toggle wired through controls.js.
+  const labelsSystem = createLabelSystem({
+    THREE,
+    scene,
+    getExag: () => EXAG,
+  });
+  labelsSystem.load();
+
   const appState = createAppState({
     exag: EXAG,
     ssePx: SSE_PX,
@@ -495,6 +505,7 @@ export async function initializeViewer({ THREE, MapControls }) {
       water: waterSystem,
       geology: geologySystem,
       faults: faultSystem,
+      labels: labelsSystem,
     },
     uniforms: {
       overlayUniforms,
@@ -557,7 +568,7 @@ export async function initializeViewer({ THREE, MapControls }) {
 
   startRenderLoop({
     controls, camera, culler, terrain: terrainLod,
-    systems: { buildings: buildingSystem, forest: forestSystem, roadtrip: roadTripSystem },
+    systems: { buildings: buildingSystem, forest: forestSystem, roadtrip: roadTripSystem, labels: labelsSystem },
     /**
      * Supplies the live building range to the render loop so per-frame culling honours UI changes.
      */

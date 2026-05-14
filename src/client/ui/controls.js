@@ -33,6 +33,7 @@ export function attachControls({ appState, systems, uniforms, rebuildPlane, stat
       systems.forest.setExaggeration(value);
       systems.water.setExaggeration(value);
       systems.amenities.setExaggeration(value);
+      systems.labels?.setExag(value);
     }
   });
 
@@ -79,6 +80,16 @@ export function attachControls({ appState, systems, uniforms, rebuildPlane, stat
       quaternaryVisible: Boolean(uniforms.geoUniforms.uQuatShow.value),
     });
   };
+
+  /**
+   * Toggles the named-feature labels (towns / peaks / hills / lakes).
+   */
+  const labelsEl = document.getElementById('showLabels');
+  if (labelsEl) {
+    labelsEl.onchange = (event) => {
+      systems.labels?.setVisible(event.target.checked);
+    };
+  }
 
   /**
    * Toggles the tile-edge debug outlines that trace each rendered terrain mesh perimeter.

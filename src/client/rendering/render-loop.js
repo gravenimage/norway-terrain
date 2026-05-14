@@ -23,6 +23,7 @@ export function startRenderLoop({ controls, camera, culler, terrain, systems, ge
     lastFrameTime = tNow;
     controls.update();
     if (systems.roadtrip) systems.roadtrip.update(dt);
+    if (systems.labels) systems.labels.update(camera);
     terrain.recycleAll();
 
     camera.updateMatrixWorld();
