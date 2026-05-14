@@ -21,12 +21,14 @@ import { createAppState } from './core/app-state.js';
 import { createWorldTransform } from './core/coordinates.js';
 import { createTileCache } from './terrain/tile-cache.js';
 import { createTerrainMeshPool } from './terrain/terrain-mesh-pool.js';
+import { makeTileEdgeGeometry } from './terrain/tile-edge-geometry.js';
 import { createFrustumCuller } from './rendering/frustum-culler.js';
 import { createTerrainLodRenderer } from './terrain/terrain-lod.js';
 import { startRenderLoop } from './rendering/render-loop.js';
 import {
   createBuildingMaterial,
   createTerrainMaterial,
+  createTileEdgeMaterial,
   createWaterMaterial,
 } from './rendering/material-factory.js';
 import { createAmenitiesSystem } from './features/amenities.js';
@@ -308,7 +310,15 @@ export async function initializeViewer({ THREE, MapControls }) {
   }
   
   // ---------- mesh pool ----------
-  const terrainMeshPool = createTerrainMeshPool({ THREE, scene, makeMaterial, initialGeometry: initialPlane });
+  const initialEdgeGeometry = makeTileEdgeGeometry(THREE, SEG);
+  const terrainMeshPool = createTerrainMeshPool({
+    THREE,
+    scene,
+    makeMaterial,
+    initialGeometry: initialPlane,
+    makeEdgeMaterial: (uniforms) => createTileEdgeMaterial(uniforms),
+    edgeGeometry: initialEdgeGeometry,
+  });
   
   // ---------- quadtree LOD ----------
   let SSE_PX = DEFAULT_SSE_PX;
@@ -480,6 +490,10 @@ export async function initializeViewer({ THREE, MapControls }) {
        * Reports the terrain renderer's current segment count after any geometry rebuild.
        */
       getSegments() { return terrainLod.getSegments(); },
+      /**
+       * Toggles the per-tile outline overlay on every pooled terrain mesh.
+       */
+      setTileEdgesVisible(value) { terrainMeshPool.setEdgesVisible(value); },
     },
   });
   

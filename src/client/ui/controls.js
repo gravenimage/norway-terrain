@@ -80,6 +80,16 @@ export function attachControls({ appState, systems, uniforms, rebuildPlane, stat
     });
   };
 
+  /**
+   * Toggles the tile-edge debug outlines that trace each rendered terrain mesh perimeter.
+   */
+  const tileEdgesEl = document.getElementById('showTileEdges');
+  if (tileEdgesEl) {
+    tileEdgesEl.onchange = (event) => {
+      stateAccessors.setTileEdgesVisible?.(event.target.checked);
+    };
+  }
+
   const drapeEl = document.getElementById('drape');
   /**
    * Adjusts the road drape lift in metres so overlays can stay visible above exaggerated terrain.

@@ -3,6 +3,7 @@
  */
 
 import { tileBounds } from './tile-pyramid.js';
+import { makeTileEdgeGeometry } from './tile-edge-geometry.js';
 
 /**
  * Builds the LOD renderer that chooses tiles by projected screen size and submits them through the mesh pool.
@@ -166,7 +167,8 @@ export function createTerrainLodRenderer({
     SEG = seg;
     plane = new THREE.PlaneGeometry(1, 1, SEG, SEG);
     old.dispose();
-    meshPool.setGeometry(plane);
+    const edgeGeom = makeTileEdgeGeometry(THREE, SEG);
+    meshPool.setGeometry(plane, edgeGeom);
   }
 
   /**

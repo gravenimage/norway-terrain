@@ -19,6 +19,10 @@ import {
   propVertexShader,
   propFragmentShader,
 } from '../shaders/amenity-shader.js';
+import {
+  vertexShader as tileEdgeVertexShader,
+  fragmentShader as tileEdgeFragmentShader,
+} from '../shaders/tile-edge-shader.js';
 
 /**
  * Creates the terrain material with derivative support and polygon offset so terrain shading, contours, and overlays remain stable.
@@ -123,6 +127,25 @@ export function createCanopyMaterial(uniforms) {
     depthWrite: true,
     side: THREE.DoubleSide,
     extensions: { derivatives: true },
+  });
+}
+
+/**
+ * Creates the tile-edge outline material used to draw the perimeter of each rendered terrain tile.
+ *
+ * The material shares its uniforms object with the corresponding terrain mesh so per-tile values
+ * (height texture, origin, tile size, exaggeration, uv scale/offset) propagate without extra updates.
+ * depthTest is enabled so outlines are correctly occluded by terrain in front of them; depthWrite is
+ * disabled so the lines do not block features such as buildings drawn afterwards.
+ */
+export function createTileEdgeMaterial(uniforms) {
+  return new THREE.ShaderMaterial({
+    uniforms,
+    vertexShader: tileEdgeVertexShader,
+    fragmentShader: tileEdgeFragmentShader,
+    transparent: false,
+    depthTest: true,
+    depthWrite: false,
   });
 }
 
