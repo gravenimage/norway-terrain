@@ -24,13 +24,26 @@ ROOT = Path(__file__).resolve().parent
 MAX_PORT_TRIES = 20
 
 
+class _ThreadingHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
+    """Threaded HTTP server so tile/asset requests can be served concurrently.
+
+    The default ``socketserver.TCPServer`` handles one request at a time, which
+    causes the browser's parallel tile fetches to stall when many tiles are
+    requested at once (visible as slow load times in normal use and timeouts in
+    automated Playwright tests).
+    """
+
+    daemon_threads = True
+    allow_reuse_address = True
+
+
 def _bind_server(start_port: int, handler) -> tuple[socketserver.TCPServer, int]:
     """Try to bind starting at start_port, falling back to the next available port."""
     last_err: OSError | None = None
     for offset in range(MAX_PORT_TRIES):
         port = start_port + offset
         try:
-            httpd = socketserver.TCPServer(("", port), handler)
+            httpd = _ThreadingHTTPServer(("", port), handler)
         except OSError as exc:
             if exc.errno in (errno.EADDRINUSE, errno.EACCES, getattr(errno, "WSAEADDRINUSE", 10048)):
                 print(f"  port {port} is in use, trying {port + 1} ...", flush=True)
@@ -55,7 +68,6 @@ def main() -> None:
     print(f"\nStep 2/2: starting local server (preferred port {args.port}) ...", flush=True)
 
     handler = http.server.SimpleHTTPRequestHandler
-    socketserver.TCPServer.allow_reuse_address = True
     try:
         httpd, port = _bind_server(args.port, handler)
     except RuntimeError as exc:

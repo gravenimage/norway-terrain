@@ -10,6 +10,7 @@ geology_cache/
 amenities_cache/
 tests/_artifacts/
 .worktrees/
+node_modules/
 
 # Big reconstituted data files (tracked as chunks under data_parts/).
 # Run `python reconstitute.py` after cloning to recreate these.
