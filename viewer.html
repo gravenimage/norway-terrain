@@ -80,6 +80,7 @@ import {
   ELEV_MAX as DEFAULT_ELEV_MAX,
   TREE_CANOPY_FADE_WIDTH_METRES,
 } from './src/client/core/constants.js';
+import { createAppState } from './src/client/core/app-state.js';
 import { createWorldTransform } from './src/client/core/coordinates.js';
 import { tileBounds, tileKey as terrainTileKey, tileUrl } from './src/client/terrain/tile-pyramid.js';
 import {
@@ -95,6 +96,8 @@ import { createFaultSystem } from './src/client/overlays/faults.js';
 import { createGeologySystem } from './src/client/overlays/geology.js';
 import { attachIdentifyHandlers } from './src/client/overlays/identify.js';
 import { createRoadSystem } from './src/client/overlays/roads.js';
+import { attachControls } from './src/client/ui/controls.js';
+import { updateFps, updateHud } from './src/client/ui/hud.js';
 
 const meta = await (await fetch('tiles/meta.json')).json();
 const world = createWorldTransform(meta);
@@ -760,95 +763,53 @@ function loop(){
   frames++;
   const now = performance.now();
   if (now - last > 500) {
-    document.getElementById('fps').textContent = Math.round(frames * 1000 / (now-last));
+    updateFps(frames * 1000 / (now-last));
     frames = 0; last = now;
-    document.getElementById('tcount').textContent = drawn;
-    document.getElementById('ccount').textContent = tileCache.size;
+    updateHud({ drawn, cacheSize: tileCache.size });
   }
 }
 
-const exagEl = document.getElementById('exag');
-exagEl.oninput = () => { EXAG = +exagEl.value; document.getElementById('exagv').textContent = EXAG.toFixed(2); roadSystem.setExaggeration(EXAG); buildingSystem.setExaggeration(EXAG); forestSystem.setExaggeration(EXAG); waterSystem.setExaggeration(EXAG); amenitiesSystem.setExaggeration(EXAG); /* faults z is baked at load time — updating fault EXAG requires geometry rebuild (out of scope) */ };
-const sseEl = document.getElementById('sse');
-sseEl.oninput = () => { SSE_PX = +sseEl.value; document.getElementById('ssev').textContent = SSE_PX.toFixed(1); };
-const segEl = document.getElementById('seg');
-segEl.oninput = () => { rebuildPlane(+segEl.value); document.getElementById('segv').textContent = SEG; };
-document.getElementById('showRoads').onchange = e => { roadSystem.setRoadsVisible(e.target.checked); };
-document.getElementById('showTowns').onchange = e => { roadSystem.setTownsVisible(e.target.checked); };
-document.getElementById('showBld').onchange = (event) => {
-  buildingSystem.setVisible(event.target.checked);
-  amenitiesSystem.setVisible(event.target.checked);
-};
-document.getElementById('showTrees').onchange = (event) => {
-  forestSystem.setVisible(event.target.checked);
-  forestSystem.updateForGeology({
-    bedrockVisible: Boolean(geoUniforms.uBedShow.value),
-    quaternaryVisible: Boolean(geoUniforms.uQuatShow.value),
-  });
-};
-const drapeEl = document.getElementById('drape');
-drapeEl.oninput = () => { roadSystem.setDrapeOffset(+drapeEl.value); document.getElementById('drapev').textContent = drapeEl.value; };
-const bldRangeEl = document.getElementById('bldRange');
-bldRangeEl.oninput = () => {
-  BLD_RANGE = (+bldRangeEl.value) * 1000;
-  document.getElementById('bldRangev').textContent = bldRangeEl.value;
-  buildingSystem.setRange(BLD_RANGE);
-  amenityAreaUniforms.uFadeFar.value = BLD_RANGE;
-  amenityAreaUniforms.uFadeNear.value = Math.max(BLD_RANGE - 4000, BLD_RANGE * 0.7);
-};
-const canopyRangeEl = document.getElementById('canopyRange');
-canopyRangeEl.oninput = () => {
-  CANOPY_RANGE = (+canopyRangeEl.value) * 1000;
-  document.getElementById('canopyRangev').textContent = canopyRangeEl.value;
-  forestSystem.setRange(CANOPY_RANGE);
-};
-const canopyLodEl = document.getElementById('canopyLod');
-canopyLodEl.oninput = () => {
-  const mid = (+canopyLodEl.value) * 1000;
-  CANOPY_LOD_LO = Math.max(50, mid - 300);
-  CANOPY_LOD_HI = mid + 300;
-  document.getElementById('canopyLodv').textContent = canopyLodEl.value;
-  forestSystem.setLodSwitch(CANOPY_LOD_LO, CANOPY_LOD_HI);
-};
-
-function _updateForestVsGeology() {
-  forestSystem.updateForGeology({
-    bedrockVisible: Boolean(geoUniforms.uBedShow.value),
-    quaternaryVisible: Boolean(geoUniforms.uQuatShow.value),
-  });
-}
-document.getElementById('cb-bedrock').addEventListener('change', e => {
-  geologySystem.setBedrockVisible(e.target.checked);
-  _updateForestVsGeology();
-});
-document.getElementById('cb-quat').addEventListener('change', e => {
-  geologySystem.setQuaternaryVisible(e.target.checked);
-  _updateForestVsGeology();
-});
-document.getElementById('cb-faults').addEventListener('change', e => {
-  faultSystem.setVisible(e.target.checked);
-});
-const blendInput = document.getElementById('r-geo-blend');
-const blendVal = document.getElementById('r-geo-blend-val');
-blendInput.addEventListener('input', e => {
-  const v = parseFloat(e.target.value);
-  geologySystem.setOpacity(v);
-  blendVal.textContent = v.toFixed(2);
+const appState = createAppState({
+  exag: EXAG,
+  ssePx: SSE_PX,
+  seg: SEG,
+  buildingRange: BLD_RANGE,
+  canopyRange: CANOPY_RANGE,
+  canopyLodLo: CANOPY_LOD_LO,
+  canopyLodHi: CANOPY_LOD_HI,
 });
 
-// ---- contour controls ----
-document.getElementById('cb-contours').addEventListener('change', e => {
-  contourUniforms.uContourShow.value = e.target.checked ? 1.0 : 0.0;
-});
-document.getElementById('contour-interval').addEventListener('change', e => {
-  contourUniforms.uContourInterval.value = parseFloat(e.target.value);
-});
-const contourOpEl = document.getElementById('r-contour-opacity');
-const contourOpVal = document.getElementById('r-contour-opacity-val');
-contourOpEl.addEventListener('input', e => {
-  const v = parseFloat(e.target.value);
-  contourUniforms.uContourOpacity.value = v;
-  contourOpVal.textContent = v.toFixed(2);
+attachControls({
+  appState,
+  systems: {
+    roads: roadSystem,
+    buildings: buildingSystem,
+    amenities: amenitiesSystem,
+    forest: forestSystem,
+    water: waterSystem,
+    geology: geologySystem,
+    faults: faultSystem,
+  },
+  uniforms: {
+    overlayUniforms,
+    buildingUniforms,
+    treeUniforms,
+    canopyUniforms,
+    waterUniforms,
+    amenityAreaUniforms,
+    amenityPropUniforms,
+    geoUniforms,
+    contourUniforms,
+  },
+  rebuildPlane,
+  stateAccessors: {
+    setExag(value) { EXAG = value; },
+    setSsePx(value) { SSE_PX = value; },
+    setBuildingRange(value) { BLD_RANGE = value; },
+    setCanopyRange(value) { CANOPY_RANGE = value; },
+    setCanopyLod(lo, hi) { CANOPY_LOD_LO = lo; CANOPY_LOD_HI = hi; },
+    getSegments() { return SEG; },
+  },
 });
 
 addEventListener('resize', () => {

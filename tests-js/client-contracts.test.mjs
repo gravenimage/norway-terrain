@@ -272,3 +272,17 @@ test('geology system exposes stateful overlay API and mutates shared uniforms', 
   system.setQuaternaryVisible(false);
   assert.equal(system.sampleAt(0, 0), null);
 });
+
+test('app state notifies subscribers only when values change', async () => {
+  const { createAppState } = await import('../src/client/core/app-state.js');
+  const appState = createAppState({ exag: 1.4 });
+  const changes = [];
+
+  appState.subscribe((change) => changes.push(change));
+  appState.set('exag', 2);
+  appState.set('exag', 2);
+
+  assert.deepEqual(appState.snapshot(), { exag: 2 });
+  assert.equal(changes.length, 1);
+  assert.deepEqual(changes[0], { name: 'exag', previous: 1.4, value: 2 });
+});
