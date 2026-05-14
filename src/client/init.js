@@ -152,6 +152,32 @@ export async function initializeViewer({ THREE, MapControls }) {
   });
   amenitiesSystem.load();
   
+  // Shared road overlay uniforms. Roads are NOT drawn as separate meshes;
+  // instead, the terrain fragment shader looks up the nearest road segment
+  // for each pixel via a coarse spatial grid (built from osm.bin at load
+  // time) and tints the terrain colour where the pixel falls within road
+  // half-width of a segment. See buildRoadOverlay() below. The same uniforms
+  // are shared by reference into water/canopy/tree materials so those shaders
+  // can discard fragments inside the road footprint and stop occluding the
+  // painted road.
+  const _dummyRoadGrid = new THREE.DataTexture(new Float32Array([0, 0]), 1, 1, THREE.RGFormat, THREE.FloatType);
+  _dummyRoadGrid.minFilter = THREE.NearestFilter; _dummyRoadGrid.magFilter = THREE.NearestFilter; _dummyRoadGrid.needsUpdate = true;
+  const _dummyRoadRefs = new THREE.DataTexture(new Float32Array([0,0,0,0]), 1, 1, THREE.RGBAFormat, THREE.FloatType);
+  _dummyRoadRefs.minFilter = THREE.NearestFilter; _dummyRoadRefs.magFilter = THREE.NearestFilter; _dummyRoadRefs.needsUpdate = true;
+  const _dummyRoadCls = new THREE.DataTexture(new Uint8Array([0]), 1, 1, THREE.RedFormat, THREE.UnsignedByteType);
+  _dummyRoadCls.minFilter = THREE.NearestFilter; _dummyRoadCls.magFilter = THREE.NearestFilter; _dummyRoadCls.needsUpdate = true;
+  const roadUniforms = {
+    uRoadGrid:      { value: _dummyRoadGrid },
+    uRoadRefs:      { value: _dummyRoadRefs },
+    uRoadCls:       { value: _dummyRoadCls },
+    uRoadOrigin:    { value: new THREE.Vector2(0, 0) },
+    uRoadCell:      { value: 500.0 },
+    uRoadGridDims:  { value: new THREE.Vector2(1, 1) },
+    uRoadRefsDims:  { value: new THREE.Vector2(1, 1) },
+    uRoadShow:      { value: 1.0 },
+    uRoadReady:     { value: 0.0 },
+  };
+  
   // ---------- Forest (low-poly conifers / birches at OSM forest cover) ----------
   const treeUniforms = {
     uExag:      { value: 1.4 },
@@ -162,6 +188,16 @@ export async function initializeViewer({ THREE, MapControls }) {
     uFogColor:  { value: FOG_COLOR },
     uFadeNear:  { value: 1200 },
     uFadeFar:   { value: 1800 },
+    // road-mask references (shared-by-reference) so trees discard road footprints
+    uRoadGrid:      roadUniforms.uRoadGrid,
+    uRoadRefs:      roadUniforms.uRoadRefs,
+    uRoadCls:       roadUniforms.uRoadCls,
+    uRoadOrigin:    roadUniforms.uRoadOrigin,
+    uRoadCell:      roadUniforms.uRoadCell,
+    uRoadGridDims:  roadUniforms.uRoadGridDims,
+    uRoadRefsDims:  roadUniforms.uRoadRefsDims,
+    uRoadShow:      roadUniforms.uRoadShow,
+    uRoadReady:     roadUniforms.uRoadReady,
   };
   let CANOPY_LOD_LO = DEFAULT_CANOPY_LOD_KM * 1000 - TREE_CANOPY_FADE_WIDTH_METRES;
   let CANOPY_LOD_HI = DEFAULT_CANOPY_LOD_KM * 1000 + TREE_CANOPY_FADE_WIDTH_METRES;
@@ -178,6 +214,16 @@ export async function initializeViewer({ THREE, MapControls }) {
     uFadeFar:   { value: CANOPY_LOD_HI },
     uRangeNear: { value: CANOPY_RANGE - 2000 },
     uRangeFar:  { value: CANOPY_RANGE },
+    // road-mask references (shared-by-reference) so canopy discards road footprints
+    uRoadGrid:      roadUniforms.uRoadGrid,
+    uRoadRefs:      roadUniforms.uRoadRefs,
+    uRoadCls:       roadUniforms.uRoadCls,
+    uRoadOrigin:    roadUniforms.uRoadOrigin,
+    uRoadCell:      roadUniforms.uRoadCell,
+    uRoadGridDims:  roadUniforms.uRoadGridDims,
+    uRoadRefsDims:  roadUniforms.uRoadRefsDims,
+    uRoadShow:      roadUniforms.uRoadShow,
+    uRoadReady:     roadUniforms.uRoadReady,
   };
   const forestSystem = createForestSystem({
     THREE,
@@ -194,6 +240,16 @@ export async function initializeViewer({ THREE, MapControls }) {
   const waterUniforms = {
     uExag: { value: 1.4 },
     uSun:  { value: SUN.clone() },
+    // road-mask references (shared-by-reference) so water discards road footprints
+    uRoadGrid:      roadUniforms.uRoadGrid,
+    uRoadRefs:      roadUniforms.uRoadRefs,
+    uRoadCls:       roadUniforms.uRoadCls,
+    uRoadOrigin:    roadUniforms.uRoadOrigin,
+    uRoadCell:      roadUniforms.uRoadCell,
+    uRoadGridDims:  roadUniforms.uRoadGridDims,
+    uRoadRefsDims:  roadUniforms.uRoadRefsDims,
+    uRoadShow:      roadUniforms.uRoadShow,
+    uRoadReady:     roadUniforms.uRoadReady,
   };
   const waterMaterial = createWaterMaterial(waterUniforms);
   const waterSystem = createWaterSystem({ THREE, scene, waterUniforms, waterMaterial });
@@ -236,29 +292,6 @@ export async function initializeViewer({ THREE, MapControls }) {
     uContourColor:     { value: new THREE.Color(0x2a1a08) },  // thin: dark brown
     uContourBoldColor: { value: new THREE.Color(0x140803) },  // bold: near-black
     uContourOpacity:   { value: 0.75 },
-  };
-  
-  // Shared road overlay uniforms. Roads are NOT drawn as separate meshes;
-  // instead, the terrain fragment shader looks up the nearest road segment
-  // for each pixel via a coarse spatial grid (built from osm.bin at load
-  // time) and tints the terrain colour where the pixel falls within road
-  // half-width of a segment. See buildRoadOverlay() below.
-  const _dummyRoadGrid = new THREE.DataTexture(new Float32Array([0, 0]), 1, 1, THREE.RGFormat, THREE.FloatType);
-  _dummyRoadGrid.minFilter = THREE.NearestFilter; _dummyRoadGrid.magFilter = THREE.NearestFilter; _dummyRoadGrid.needsUpdate = true;
-  const _dummyRoadRefs = new THREE.DataTexture(new Float32Array([0,0,0,0]), 1, 1, THREE.RGBAFormat, THREE.FloatType);
-  _dummyRoadRefs.minFilter = THREE.NearestFilter; _dummyRoadRefs.magFilter = THREE.NearestFilter; _dummyRoadRefs.needsUpdate = true;
-  const _dummyRoadCls = new THREE.DataTexture(new Uint8Array([0]), 1, 1, THREE.RedFormat, THREE.UnsignedByteType);
-  _dummyRoadCls.minFilter = THREE.NearestFilter; _dummyRoadCls.magFilter = THREE.NearestFilter; _dummyRoadCls.needsUpdate = true;
-  const roadUniforms = {
-    uRoadGrid:      { value: _dummyRoadGrid },
-    uRoadRefs:      { value: _dummyRoadRefs },
-    uRoadCls:       { value: _dummyRoadCls },
-    uRoadOrigin:    { value: new THREE.Vector2(0, 0) },
-    uRoadCell:      { value: 500.0 },
-    uRoadGridDims:  { value: new THREE.Vector2(1, 1) },
-    uRoadRefsDims:  { value: new THREE.Vector2(1, 1) },
-    uRoadShow:      { value: 1.0 },
-    uRoadReady:     { value: 0.0 },
   };
   
   /**

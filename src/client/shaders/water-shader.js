@@ -2,6 +2,8 @@
  * @file Shader string templates for a water surface with depth-based color blend and sun-lit derivative normals.
  */
 
+import { roadMaskUniformsGLSL, roadMaskFunctionGLSL } from './road-mask-glsl.js';
+
 /**
  * Vertex shader for the water plane that applies vertical exaggeration and passes world position plus depth fade.
  * Expects uExag so water elevation remains consistent with the exaggerated terrain scene.
@@ -33,8 +35,11 @@ export const fragmentShader = String.raw`
     uniform vec3 uSun;
     varying vec3 vWorld;
     varying float vDepthFade;
+    ${roadMaskUniformsGLSL}
+    ${roadMaskFunctionGLSL}
     void main(){
       #include <logdepthbuf_fragment>
+      if (roadFootprintHalfWidth(vWorld.xy, 0.5) >= 0.0) discard;
       vec3 dx = dFdx(vWorld);
       vec3 dy = dFdy(vWorld);
       vec3 n = normalize(cross(dx, dy));

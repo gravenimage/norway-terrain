@@ -2,6 +2,8 @@
  * @file Shader string templates for close tree meshes and distant billboards with fogged alpha fades.
  */
 
+import { roadMaskUniformsGLSL, roadMaskFunctionGLSL } from './road-mask-glsl.js';
+
 /**
  * Vertex shader for instanced tree meshes that scales canopy and trunk parts around terrain-anchored positions.
  * Expects aPart, iPos, iSize, iRot, iCanopyA, iCanopyB attributes plus uExag and uExtraLift uniforms.
@@ -67,8 +69,11 @@ uniform float uFogNear;
 uniform float uFogFar;
 uniform float uFadeNear;
 uniform float uFadeFar;
+${roadMaskUniformsGLSL}
+${roadMaskFunctionGLSL}
 void main(){
   #include <logdepthbuf_fragment>
+  if (roadFootprintHalfWidth(vWorld.xy, 0.5) >= 0.0) discard;
   vec3 N = normalize(vNormal);
   float diff = clamp(dot(N, normalize(uSun)), 0.0, 1.0);
   float wrap = 0.35 + 0.80 * diff;
@@ -138,8 +143,11 @@ uniform float uFogNear;
 uniform float uFogFar;
 uniform float uFadeNear;
 uniform float uFadeFar;
+${roadMaskUniformsGLSL}
+${roadMaskFunctionGLSL}
 void main(){
   #include <logdepthbuf_fragment>
+  if (roadFootprintHalfWidth(vWorld.xy, 0.5) >= 0.0) discard;
   // soft conical alpha mask: opaque in centre, fading at outer edge
   float u = abs(vQuad.x);
   float taper = 1.0 - vQuad.y * 0.80; // matches geometry taper

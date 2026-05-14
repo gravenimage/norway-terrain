@@ -2,6 +2,8 @@
  * @file Shader string templates for forest canopy polygons with procedural color variation and altitude desaturation.
  */
 
+import { roadMaskUniformsGLSL, roadMaskFunctionGLSL } from './road-mask-glsl.js';
+
 /**
  * Vertex shader for canopy surfaces that lifts canopy tops above exaggerated terrain according to elevation band.
  * Expects uExag and uExtraLift uniforms and passes base elevation, world position, and view distance to the fragment stage.
@@ -49,6 +51,9 @@ uniform float uFogNear, uFogFar;
 uniform float uFadeNear, uFadeFar;
 uniform float uRangeNear, uRangeFar;
 
+${roadMaskUniformsGLSL}
+${roadMaskFunctionGLSL}
+
 float hash21(vec2 p){
   p = fract(p * vec2(123.34, 456.21));
   p += dot(p, p + 45.32);
@@ -69,6 +74,7 @@ float fbm(vec2 p){
 
 void main(){
   #include <logdepthbuf_fragment>
+  if (roadFootprintHalfWidth(vWorld.xy, 0.5) >= 0.0) discard;
   vec3 N = normalize(cross(dFdx(vWorld), dFdy(vWorld)));
   float n1 = fbm(vWorld.xy * 0.013);
   float n2 = fbm(vWorld.xy * 0.045 + 17.0);
