@@ -10,6 +10,7 @@ import { updateFps, updateHud } from '../ui/hud.js';
  */
 export function startRenderLoop({ controls, camera, culler, terrain, systems, getBldRange, tileCache, renderer, scene, compass }) {
   let last = performance.now(), frames = 0;
+  let lastFrameTime = performance.now();
 
   /**
    * Executes one animation frame in the required pipeline order: controls, recycle, camera matrix, frustum, terrain, buildings/forest cull, cache evict, render, compass, then HUD.
@@ -17,7 +18,11 @@ export function startRenderLoop({ controls, camera, culler, terrain, systems, ge
    */
   function loop() {
     requestAnimationFrame(loop);
+    const tNow = performance.now();
+    const dt = Math.min(0.1, (tNow - lastFrameTime) / 1000); // clamp to 100ms to avoid huge jumps after tab-switches
+    lastFrameTime = tNow;
     controls.update();
+    if (systems.roadtrip) systems.roadtrip.update(dt);
     terrain.recycleAll();
 
     camera.updateMatrixWorld();

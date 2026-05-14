@@ -41,6 +41,8 @@ import { attachIdentifyHandlers } from './overlays/identify.js';
 import { createRoadSystem } from './overlays/roads.js';
 import { attachControls } from './ui/controls.js';
 import { createPlacementObstacles } from './placement/obstacles.js';
+import { createRoadTripSystem } from './features/roadtrip.js';
+import { attachRoadTripPanel } from './ui/roadtrip-panel.js';
 
 
 /**
@@ -539,10 +541,23 @@ export async function initializeViewer({ THREE, MapControls }) {
   });
   
   addEventListener('resize', viewerScene.resize);
-  
+
+  // Road-trip mode (E39 rail-guided camera). Constructed late so it can capture the latest
+  // controls reference and the live EXAG getter; load() is fire-and-forget like other systems.
+  const roadTripSystem = createRoadTripSystem({
+    THREE,
+    camera,
+    controls,
+    canvas: document.querySelector('canvas'),
+    getExag: () => EXAG,
+  });
+  roadTripSystem.attachInput();
+  roadTripSystem.load();
+  attachRoadTripPanel({ roadTripSystem });
+
   startRenderLoop({
     controls, camera, culler, terrain: terrainLod,
-    systems: { buildings: buildingSystem, forest: forestSystem },
+    systems: { buildings: buildingSystem, forest: forestSystem, roadtrip: roadTripSystem },
     /**
      * Supplies the live building range to the render loop so per-frame culling honours UI changes.
      */
