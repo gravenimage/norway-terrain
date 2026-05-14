@@ -29,8 +29,8 @@ export function attachRoadTripPanel({ roadTripSystem }) {
       <button data-rt="stop" style="flex:1">Stop</button>
     </div>
     <label style="display:block;margin:4px 0">
-      <span data-rt="height-label">Height: 30 m</span>
-      <input data-rt="height" type="range" min="3" max="300" step="1" value="30" style="width:100%">
+      <span data-rt="height-label">Height: 75 m</span>
+      <input data-rt="height" type="range" min="3" max="300" step="1" value="75" style="width:100%">
     </label>
     <label style="display:block;margin:4px 0">
       <span data-rt="speed-label">Speed: 70 km/h</span>

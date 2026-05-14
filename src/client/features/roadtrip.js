@@ -89,7 +89,7 @@ export function createRoadTripSystem({
   controls,
   canvas,
   getExag = () => 1.0,
-  initialHeight = 30,
+  initialHeight = 75,
   initialSpeedKmh = 70,
 } = {}) {
   let route = null; // { floats, nPts, idxMekjarvik, idxEgersund, totalLen }
@@ -105,10 +105,18 @@ export function createRoadTripSystem({
   let dragging = false;
   let lastPx = 0, lastPy = 0;
   let controlsTargetRestore = null;
+  // smoothedHeadingYaw lags the raw road tangent so the camera doesn't snap around roundabouts
+  // and OSM vertex kinks. null means "uninitialised" — first applyCamera snaps to the target so
+  // teleports don't sweep through the world.
+  let smoothedHeadingYaw = null;
   const PITCH_MIN = -1.2; // ~-69° (look up steeply, but not flip)
   const PITCH_MAX = 0.6;  // ~+34° (look down at the road)
   const YAW_DECAY = 4.0;  // 1/s, exponential decay toward zero on release
   const PITCH_DECAY = 4.0;
+  // Heading-smoothing time constant: at ~70km/h this gives roughly 250m of "settling distance"
+  // before the camera is aimed at a new straight section, so roundabouts/turns are felt as a
+  // gentle sweep rather than a jerk. Larger = lazier camera.
+  const HEADING_TIME_CONSTANT = 4.0; // seconds
   const onStateChange = new Set();
 
   function notify() {
@@ -163,21 +171,41 @@ export function createRoadTripSystem({
   }
 
   /**
-   * Compose the camera transform: position = (rx, ry, exag*rz + height); look along
-   * (fwdX, fwdY) rotated by (yaw_drag, pitch_drag). The forward tangent is taken from the
-   * smoothed lookahead window already computed in `sampleRoute`.
+   * Wrap an angle delta into (-π, π] so heading smoothing always rotates the short way around the
+   * unit circle instead of, say, sweeping 359° counter-clockwise to reach a 1° turn.
    */
-  function applyCamera() {
+  function shortestAngleDelta(from, to) {
+    let d = to - from;
+    while (d > Math.PI) d -= 2 * Math.PI;
+    while (d < -Math.PI) d += 2 * Math.PI;
+    return d;
+  }
+
+  /**
+   * Compose the camera transform: position = (rx, ry, exag*rz + height); look along the
+   * inertia-smoothed heading rotated by (yaw_drag, pitch_drag). `dt` is used to advance the
+   * heading low-pass filter toward the raw road tangent; passing 0 leaves the heading untouched
+   * (used by teleport/setHeight to refresh the view without artificially aging the filter).
+   */
+  function applyCamera(dt = 0) {
     if (!route) return;
     const s = sampleRoute(route.floats, route.nPts, progress);
     const exag = getExag();
     const baseZ = s.z * exag;
     camera.position.set(s.x, s.y, baseZ + height);
 
-    // road tangent angle in world XY plane
+    // road tangent angle in world XY plane (raw, before smoothing)
     const tangentAngle = Math.atan2(s.fwdY, s.fwdX);
-    const driveYaw = direction > 0 ? tangentAngle : tangentAngle + Math.PI;
-    const yaw = driveYaw + dragYaw;
+    const targetHeadingYaw = direction > 0 ? tangentAngle : tangentAngle + Math.PI;
+    if (smoothedHeadingYaw === null) {
+      smoothedHeadingYaw = targetHeadingYaw;
+    } else if (dt > 0) {
+      // exponential approach: alpha = 1 - exp(-dt/τ). With τ=4s and dt=1/60s, alpha≈0.0041,
+      // so the heading takes several seconds to fully converge — that's the inertia.
+      const alpha = 1 - Math.exp(-dt / HEADING_TIME_CONSTANT);
+      smoothedHeadingYaw += shortestAngleDelta(smoothedHeadingYaw, targetHeadingYaw) * alpha;
+    }
+    const yaw = smoothedHeadingYaw + dragYaw;
     const pitch = dragPitch;
     // forward vector with pitch (Z-up): horizontal*cos(pitch) + Z*sin(pitch)
     const cy = Math.cos(yaw), sy = Math.sin(yaw);
@@ -237,10 +265,13 @@ export function createRoadTripSystem({
       // when teleporting to egersund, the natural drive is north (s decreasing → -1).
       direction = endpoint === 'mekjarvik' ? 1 : -1;
       dragYaw = 0; dragPitch = 0; dragYawVel = 0; dragPitchVel = 0;
+      // Reset the heading filter so the teleport snaps to face down the road instead of slewing
+      // from whatever heading we had at the last position.
+      smoothedHeadingYaw = null;
       // While idle we still want the camera to actually be over the road, not where MapControls
       // last left it, so apply now and disable orbit drift until user explicitly resumes idle.
       const wasMode = mode;
-      mode = 'driving'; applyCamera(); mode = wasMode;
+      mode = 'driving'; applyCamera(0); mode = wasMode;
       // Sync controls target to the road-aligned target so MapControls (if still enabled) orbits
       // around the teleport location instead of the old map centre.
       if (mode === 'idle' && controls) controls.update?.();
@@ -254,7 +285,11 @@ export function createRoadTripSystem({
     startDrive(toEndpoint) {
       if (!route) return;
       const target = endpointDistance(toEndpoint);
-      direction = target > progress ? 1 : -1;
+      const newDirection = target > progress ? 1 : -1;
+      // If we just reversed direction (e.g. user drove Mekjarvik→Egersund then hit Drive→Mekjarvik
+      // mid-route), snap the heading so the camera doesn't lazily 180° around on its own.
+      if (newDirection !== direction) smoothedHeadingYaw = null;
+      direction = newDirection;
       if (controls) {
         controlsTargetRestore = controls.target ? controls.target.clone() : null;
         controls.enabled = false;
@@ -280,7 +315,7 @@ export function createRoadTripSystem({
       notify();
     },
 
-    setHeight(h) { height = Math.max(2, h); if (mode === 'driving') applyCamera(); notify(); },
+    setHeight(h) { height = Math.max(2, h); if (mode === 'driving') applyCamera(0); notify(); },
     setSpeed(kmh) { speedKmh = Math.max(1, kmh); notify(); },
 
     /**
@@ -300,7 +335,7 @@ export function createRoadTripSystem({
         dragYaw *= decay;
         dragPitch *= pdecay;
       }
-      applyCamera();
+      applyCamera(dt);
     },
 
     /**
