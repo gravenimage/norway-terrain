@@ -85,7 +85,11 @@ import { createCompass } from './src/client/rendering/compass.js';
 import { createViewerScene } from './src/client/rendering/scene.js';
 import { createAppState } from './src/client/core/app-state.js';
 import { createWorldTransform } from './src/client/core/coordinates.js';
-import { tileBounds, tileKey as terrainTileKey, tileUrl } from './src/client/terrain/tile-pyramid.js';
+import { createTileCache } from './src/client/terrain/tile-cache.js';
+import { createTerrainMeshPool } from './src/client/terrain/terrain-mesh-pool.js';
+import { createFrustumCuller } from './src/client/rendering/frustum-culler.js';
+import { createTerrainLodRenderer } from './src/client/terrain/terrain-lod.js';
+import { startRenderLoop } from './src/client/rendering/render-loop.js';
 import {
   createBuildingMaterial,
   createTerrainMaterial,
@@ -100,7 +104,6 @@ import { createGeologySystem } from './src/client/overlays/geology.js';
 import { attachIdentifyHandlers } from './src/client/overlays/identify.js';
 import { createRoadSystem } from './src/client/overlays/roads.js';
 import { attachControls } from './src/client/ui/controls.js';
-import { updateFps, updateHud } from './src/client/ui/hud.js';
 
 const meta = await (await fetch('tiles/meta.json')).json();
 const world = createWorldTransform(meta);
@@ -252,41 +255,11 @@ forestSystem.loadTrees();
 // ---------------- end inland water -----------------
 
 
-const loader = new THREE.TextureLoader();
-const tileCache = new Map();
-const MAX_CACHE = 400;
-
-function tileKey(z,x,y){ return terrainTileKey(z,x,y); }
-function getTile(z,x,y) {
-  const k = tileKey(z,x,y);
-  let t = tileCache.get(k);
-  if (t) { t.lastUsed = performance.now(); return t; }
-  t = { tex:null, lastUsed: performance.now(), loading:true, missing:false };
-  tileCache.set(k, t);
-  loader.load(tileUrl(z,x,y), tex => {
-    tex.flipY = false;
-    tex.minFilter = THREE.LinearFilter;
-    tex.magFilter = THREE.LinearFilter;
-    tex.generateMipmaps = false;
-    tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
-    tex.colorSpace = THREE.NoColorSpace;
-    t.tex = tex; t.loading = false;
-  }, undefined, () => { t.loading = false; t.missing = true; });
-  return t;
-}
-function evictCache(){
-  if (tileCache.size <= MAX_CACHE) return;
-  const arr = [...tileCache.entries()].sort((a,b) => a[1].lastUsed - b[1].lastUsed);
-  const drop = arr.slice(0, tileCache.size - MAX_CACHE);
-  for (const [k, v] of drop) {
-    if (v.tex) v.tex.dispose();
-    tileCache.delete(k);
-  }
-}
+const tileCache = createTileCache({ THREE, maxEntries: 400 });
 
 // ---------- shared geometry ----------
-let SEG = DEFAULT_SEGMENTS;
-let plane = new THREE.PlaneGeometry(1, 1, SEG, SEG);
+const SEG = DEFAULT_SEGMENTS;
+const initialPlane = new THREE.PlaneGeometry(1, 1, SEG, SEG);
 
 // ---------- shader ----------
 // Shared geology overlay uniforms — all terrain materials get these
@@ -387,33 +360,7 @@ function makeMaterial(){
 }
 
 // ---------- mesh pool ----------
-const meshPool = [];
-const meshUsed = [];
-function acquireMesh(){
-  let m = meshPool.pop();
-  if (!m) {
-    m = new THREE.Mesh(plane, makeMaterial());
-    m.frustumCulled = false;
-  } else {
-    m.geometry = plane;
-  }
-  meshUsed.push(m);
-  scene.add(m);
-  return m;
-}
-function recycleMeshes(){
-  for (const m of meshUsed) { scene.remove(m); meshPool.push(m); }
-  meshUsed.length = 0;
-}
-
-// Update uSeg uniforms when SEG changes
-function rebuildPlane(seg){
-  const old = plane;
-  SEG = seg;
-  plane = new THREE.PlaneGeometry(1, 1, SEG, SEG);
-  old.dispose();
-  // existing pooled meshes will pick up SEG via uSeg uniform on next draw
-}
+const terrainMeshPool = createTerrainMeshPool({ THREE, scene, makeMaterial, initialGeometry: initialPlane });
 
 // ---------- quadtree LOD ----------
 let SSE_PX = DEFAULT_SSE_PX;
@@ -489,119 +436,20 @@ attachIdentifyHandlers({
 });
 // ---------------- end click-to-identify -----------------
 
-function tileBoundsWorld(z,x,y){
-  const b = tileBounds(meta, z, x, y);
-  return { xmin: b.x0 - CENTER_X, ymin: b.y0 - CENTER_Y, xmax: b.x1 - CENTER_X, ymax: b.y1 - CENTER_Y, size: b.size };
-}
-function tileIntersectsSrc(z,x,y){
-  const b = tileBounds(meta, z, x, y);
-  return !(b.x1 <= SRC.xMin || b.x0 >= SRC.xMax || b.y1 <= SRC.yMin || b.y0 >= SRC.yMax);
-}
-
-const _v = new THREE.Vector3();
-function projectedSizePx(b){
-  const cx = (b.xmin + b.xmax)/2;
-  const cy = (b.ymin + b.ymax)/2;
-  _v.set(cx, cy, 0);
-  const dist = Math.max(camera.position.distanceTo(_v), 1);
-  const halfH = Math.tan(camera.fov*Math.PI/360) * dist;
-  return (b.size / (2*halfH)) * renderer.domElement.height;
-}
-
-const frustum = new THREE.Frustum();
-const _box = new THREE.Box3();
-const _projMat = new THREE.Matrix4();
-const _bmin = new THREE.Vector3();
-const _bmax = new THREE.Vector3();
-function inFrustum(b){
-  _bmin.set(b.xmin, b.ymin, 0);
-  _bmax.set(b.xmax, b.ymax, ELEV_MAX*EXAG + 50);
-  _box.set(_bmin, _bmax);
-  return frustum.intersectsBox(_box);
-}
-
-let drawn = 0;
-function visit(z,x,y){
-  if (!tileIntersectsSrc(z,x,y)) return;
-  const b = tileBoundsWorld(z,x,y);
-  if (!inFrustum(b)) return;
-  const screenPx = projectedSizePx(b);
-  const sse = screenPx / SEG;
-  if (z < MAX_Z && sse > SSE_PX) {
-    visit(z+1, x*2,   y*2);
-    visit(z+1, x*2+1, y*2);
-    visit(z+1, x*2,   y*2+1);
-    visit(z+1, x*2+1, y*2+1);
-    return;
-  }
-  let tz=z, tx=x, ty=y;
-  let t = getTile(tz,tx,ty);
-  while ((!t.tex || t.missing) && tz > 0) {
-    tz--; tx >>= 1; ty >>= 1;
-    t = getTile(tz,tx,ty);
-  }
-  if (!t.tex) return;
-  drawTile(z,x,y, b, tz,tx,ty, t.tex);
-}
-
-function drawTile(z,x,y, b, tz,tx,ty, tex){
-  const m = acquireMesh();
-  m.position.set((b.xmin+b.xmax)/2, (b.ymin+b.ymax)/2, 0);
-  m.scale.set(b.size, b.size, 1);
-  const u = m.material.uniforms;
-  u.uHeight.value = tex;
-  u.uOriginXY.value.set(b.xmin, b.ymin);
-  u.uTileSize.value = b.size;
-  u.uExag.value = EXAG;
-  u.uElevMax.value = ELEV_MAX;
-  u.uSun.value.copy(SUN);
-  u.uSeg.value = SEG;
-  u.uFogNear.value = FOG_NEAR;
-  u.uFogFar.value = FOG_FAR;
-  u.uFogColor.value = FOG_COLOR;
-  if (tz === z) {
-    u.uUVScale.value.set(1,1);
-    u.uUVOffset.value.set(0,0);
-  } else {
-    const dz = z - tz;
-    const span = 1.0 / (1 << dz);
-    const ax = x - (tx << dz);
-    const ay = y - (ty << dz);
-    u.uUVScale.value.set(span, span);
-    u.uUVOffset.value.set(ax*span, ay*span);
-  }
-  drawn++;
-}
+const culler = createFrustumCuller(THREE);
+const terrainLod = createTerrainLodRenderer({
+  THREE, meta, centerX: CENTER_X, centerY: CENTER_Y, camera, renderer,
+  frustum: culler.frustum,
+  getTile: tileCache.getTile,
+  meshPool: terrainMeshPool,
+  getExag: () => EXAG,
+  getSsePx: () => SSE_PX,
+  initialSeg: SEG,
+  initialPlane,
+  ELEV_MAX, SUN, FOG_NEAR, FOG_FAR, FOG_COLOR,
+});
 
 const compass = createCompass({ THREE, renderer, camera });
-
-// ---------- main loop ----------
-let last = performance.now(), frames=0;
-function loop(){
-  requestAnimationFrame(loop);
-  controls.update();
-  recycleMeshes();
-  drawn = 0;
-
-  camera.updateMatrixWorld();
-  _projMat.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
-  frustum.setFromProjectionMatrix(_projMat);
-
-  visit(0,0,0);
-  buildingSystem.cull({ camera, frustum, rangeMetres: BLD_RANGE });
-  forestSystem.cull({ camera, frustum });
-  evictCache();
-  renderer.render(scene, camera);
-  compass.render();
-
-  frames++;
-  const now = performance.now();
-  if (now - last > 500) {
-    updateFps(frames * 1000 / (now-last));
-    frames = 0; last = now;
-    updateHud({ drawn, cacheSize: tileCache.size });
-  }
-}
 
 const appState = createAppState({
   exag: EXAG,
@@ -635,20 +483,25 @@ attachControls({
     geoUniforms,
     contourUniforms,
   },
-  rebuildPlane,
+  rebuildPlane: terrainLod.rebuildPlane,
   stateAccessors: {
     setExag(value) { EXAG = value; },
     setSsePx(value) { SSE_PX = value; },
     setBuildingRange(value) { BLD_RANGE = value; },
     setCanopyRange(value) { CANOPY_RANGE = value; },
     setCanopyLod(lo, hi) { CANOPY_LOD_LO = lo; CANOPY_LOD_HI = hi; },
-    getSegments() { return SEG; },
+    getSegments() { return terrainLod.getSegments(); },
   },
 });
 
 addEventListener('resize', viewerScene.resize);
 
-loop();
+startRenderLoop({
+  controls, camera, culler, terrain: terrainLod,
+  systems: { buildings: buildingSystem, forest: forestSystem },
+  getBldRange: () => BLD_RANGE,
+  tileCache, renderer, scene, compass,
+});
 </script>
 </body>
 </html>

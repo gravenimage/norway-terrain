@@ -423,6 +423,77 @@ test('compass factory preserves viewport rendering and camera orientation sync',
   }
 });
 
+test('tile cache module exports createTileCache with LRU eviction and getTile', async () => {
+  const source = await readFile(new URL('../src/client/terrain/tile-cache.js', import.meta.url), 'utf8');
+  assert.match(source, /export function createTileCache/);
+  assert.match(source, /getTile/);
+  assert.match(source, /evict/);
+  assert.match(source, /MAX_CACHE|maxEntries/);
+  assert.match(source, /lastUsed/);
+  assert.match(source, /\.sort\(/);
+  assert.match(source, /tileUrl/);
+  assert.match(source, /TextureLoader/);
+});
+
+test('terrain mesh pool module exports createTerrainMeshPool with acquire/recycleAll/setGeometry', async () => {
+  const source = await readFile(new URL('../src/client/terrain/terrain-mesh-pool.js', import.meta.url), 'utf8');
+  assert.match(source, /export function createTerrainMeshPool/);
+  assert.match(source, /acquire/);
+  assert.match(source, /recycleAll/);
+  assert.match(source, /setGeometry/);
+  assert.match(source, /usedCount/);
+  assert.match(source, /scene\.add/);
+  assert.match(source, /scene\.remove/);
+  assert.match(source, /frustumCulled\s*=\s*false/);
+});
+
+test('frustum culler module exports createFrustumCuller preserving matrix update expression', async () => {
+  const source = await readFile(new URL('../src/client/rendering/frustum-culler.js', import.meta.url), 'utf8');
+  assert.match(source, /export function createFrustumCuller/);
+  assert.match(source, /frustum\.setFromProjectionMatrix/);
+  assert.match(source, /_projMat\.multiplyMatrices\s*\(/);
+  assert.match(source, /camera\.projectionMatrix/);
+  assert.match(source, /camera\.matrixWorldInverse/);
+});
+
+test('terrain LOD renderer module exports createTerrainLodRenderer preserving visit recursion', async () => {
+  const source = await readFile(new URL('../src/client/terrain/terrain-lod.js', import.meta.url), 'utf8');
+  assert.match(source, /export function createTerrainLodRenderer/);
+  assert.match(source, /visitRoot/);
+  assert.match(source, /rebuildPlane/);
+  assert.match(source, /getDrawnCount/);
+  // Recursion order verbatim
+  assert.match(source, /visit\(z\+1,\s*x\*2,\s*y\*2\)/);
+  assert.match(source, /visit\(z\+1,\s*x\*2\+1,\s*y\*2\)/);
+  assert.match(source, /visit\(z\+1,\s*x\*2,\s*y\*2\+1\)/);
+  assert.match(source, /visit\(z\+1,\s*x\*2\+1,\s*y\*2\+1\)/);
+  // Ancestor fallback
+  assert.match(source, /tz--;\s*tx\s*>>=\s*1;\s*ty\s*>>=\s*1/);
+  // Geometry rebuild disposes old
+  assert.match(source, /old\.dispose\(\)/);
+  assert.match(source, /meshPool\.setGeometry/);
+});
+
+test('render loop module exports startRenderLoop preserving per-frame ordering', async () => {
+  const source = await readFile(new URL('../src/client/rendering/render-loop.js', import.meta.url), 'utf8');
+  assert.match(source, /export function startRenderLoop/);
+  assert.match(source, /controls\.update/);
+  assert.match(source, /camera\.updateMatrixWorld/);
+  assert.match(source, /renderer\.render/);
+  assert.match(source, /compass\.render/);
+  assert.match(source, /requestAnimationFrame/);
+  assert.match(source, /updateFps/);
+  assert.match(source, /updateHud/);
+  // Eviction happens before render
+  const evictIdx = source.indexOf('evict');
+  const renderIdx = source.indexOf('renderer.render');
+  assert.ok(evictIdx < renderIdx, 'cache evict should appear before renderer.render');
+  // Recycle meshes before visiting
+  const recycleIdx = source.indexOf('recycleAll');
+  const visitIdx = source.indexOf('visitRoot');
+  assert.ok(recycleIdx < visitIdx, 'recycleAll should appear before visitRoot');
+});
+
 function vectorStub(initial = [0, 0, 0]) {
   return {
     values: [...initial],
