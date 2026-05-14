@@ -1,0 +1,16 @@
+{
+  "name": "norway-terrain-viewer-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test:client": "node --test tests-js/client-contracts.test.mjs",
+    "test:viewer": "node --test tests-js/viewer-smoke.test.mjs",
+    "test:viewer:visual": "playwright test tests-js/viewer-visual.test.mjs",
+    "test:python": "uv run --with pytest --with numpy --with rasterio --with pyproj --with requests --with shapely --with mapbox-earcut pytest -q",
+    "test": "npm run test:client && npm run test:viewer && npm run test:python"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.53.0",
+    "playwright": "^1.53.0"
+  }
+}

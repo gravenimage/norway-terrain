@@ -128,3 +128,18 @@ uv run --with numpy --with rasterio --with requests --with shapely python <scrip
 
 The rendering code in this repository is otherwise free to copy and
 adapt. See `SPEC.md` for the full visual / aesthetic specification.
+
+## Client development
+
+The browser client is split into ES modules under `src/client/` and is bootstrapped by `viewer.html`.
+
+Useful checks:
+
+~~~powershell
+npm run test:client
+npm run test:viewer
+npm run test:viewer:visual
+uv run --with pytest --with numpy --with rasterio --with pyproj --with requests --with shapely --with mapbox-earcut pytest -q
+~~~
+
+Use `docs/client-architecture.md` for module ownership and `docs/client-regression-checklist.md` before merging viewer changes.
