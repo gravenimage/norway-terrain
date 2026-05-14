@@ -1,7 +1,7 @@
 export function createWorldTransform(meta) {
-  const rootX = meta.x0;
-  const rootY = meta.y0;
-  const rootSize = meta.size;
+  const rootX = meta.rootX ?? meta.x0;
+  const rootY = meta.rootY ?? meta.y0;
+  const rootSize = meta.rootSize ?? meta.size;
   const centerX = rootX + rootSize / 2;
   const centerY = rootY + rootSize / 2;
 

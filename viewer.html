@@ -69,15 +69,32 @@
 import * as THREE from 'three';
 import { MapControls } from 'three/addons/controls/MapControls.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import {
+  CAMERA_STORAGE_KEY,
+  DEFAULT_BUILDING_RANGE_KM,
+  DEFAULT_CANOPY_LOD_KM,
+  DEFAULT_CANOPY_RANGE_KM,
+  DEFAULT_DRAPE_OFFSET_METRES, // imported for future drape default extraction; no matching JS variable yet
+  DEFAULT_EXAGGERATION,
+  DEFAULT_SEGMENTS,
+  DEFAULT_SSE_PX,
+  ELEV_MAX as DEFAULT_ELEV_MAX,
+  TREE_CANOPY_FADE_WIDTH_METRES,
+} from './src/client/core/constants.js';
+import { createWorldTransform } from './src/client/core/coordinates.js';
+import { tileBounds, tileKey as terrainTileKey, tileUrl } from './src/client/terrain/tile-pyramid.js';
 
 const meta = await (await fetch('tiles/meta.json')).json();
-const ROOT_X = meta.rootX, ROOT_Y = meta.rootY, ROOT_SIZE = meta.rootSize;
+const world = createWorldTransform(meta);
+const ROOT_X = world.rootX;
+const ROOT_Y = world.rootY;
+const ROOT_SIZE = world.rootSize;
 const MAX_Z = meta.maxZ;
 const SRC = meta.src;
-const ELEV_MAX = meta.elevMax || 1800;
+const ELEV_MAX = meta.elevMax || DEFAULT_ELEV_MAX;
 const TILE_PX = meta.tileSize;
-const CENTER_X = (SRC.xMin + SRC.xMax) / 2;
-const CENTER_Y = (SRC.yMin + SRC.yMax) / 2;
+const CENTER_X = world.centerX;
+const CENTER_Y = world.centerY;
 
 THREE.Object3D.DEFAULT_UP.set(0,0,1);
 
@@ -108,7 +125,7 @@ controls.zoomSpeed = 1.6;
 window.__viewer = { camera, controls, renderer, scene };
 
 // ---------- persist camera + target across reloads ----------
-const CAM_STORAGE_KEY = 'norwayterrain.cam.v1';
+const CAM_STORAGE_KEY = CAMERA_STORAGE_KEY;
 (function restoreCamera(){
   try {
     const raw = localStorage.getItem(CAM_STORAGE_KEY);
@@ -546,7 +563,7 @@ const buildingUniforms = {
   uFadeNear:  { value: 18000 },
   uFadeFar:   { value: 22000 },
 };
-let BLD_RANGE = 22000;
+let BLD_RANGE = DEFAULT_BUILDING_RANGE_KM * 1000;
 const buildingMaterial = new THREE.ShaderMaterial({
   uniforms: buildingUniforms,
   vertexShader: buildingVert,
@@ -1370,9 +1387,9 @@ const treeUniforms = {
   uFadeNear:  { value: 1200 },   // fade trees OUT as canopy takes over
   uFadeFar:   { value: 1800 },
 };
-let CANOPY_LOD_LO = 1200;   // below: trees opaque, canopy invisible
-let CANOPY_LOD_HI = 1800;   // above: trees gone, canopy opaque
-let CANOPY_RANGE  = 30000;  // far end of canopy visibility
+let CANOPY_LOD_LO = DEFAULT_CANOPY_LOD_KM * 1000 - TREE_CANOPY_FADE_WIDTH_METRES;   // below: trees opaque, canopy invisible
+let CANOPY_LOD_HI = DEFAULT_CANOPY_LOD_KM * 1000 + TREE_CANOPY_FADE_WIDTH_METRES;   // above: trees gone, canopy opaque
+let CANOPY_RANGE  = DEFAULT_CANOPY_RANGE_KM * 1000;  // far end of canopy visibility
 const treeMaterial = new THREE.ShaderMaterial({
   uniforms: treeUniforms,
   vertexShader: treeVert,
@@ -1829,14 +1846,14 @@ const loader = new THREE.TextureLoader();
 const tileCache = new Map();
 const MAX_CACHE = 400;
 
-function tileKey(z,x,y){ return `${z}/${x}/${y}`; }
+function tileKey(z,x,y){ return terrainTileKey(z,x,y); }
 function getTile(z,x,y) {
   const k = tileKey(z,x,y);
   let t = tileCache.get(k);
   if (t) { t.lastUsed = performance.now(); return t; }
   t = { tex:null, lastUsed: performance.now(), loading:true, missing:false };
   tileCache.set(k, t);
-  loader.load(`tiles/${z}/${x}/${y}.png`, tex => {
+  loader.load(tileUrl(z,x,y), tex => {
     tex.flipY = false;
     tex.minFilter = THREE.LinearFilter;
     tex.magFilter = THREE.LinearFilter;
@@ -1858,7 +1875,7 @@ function evictCache(){
 }
 
 // ---------- shared geometry ----------
-let SEG = 64;
+let SEG = DEFAULT_SEGMENTS;
 let plane = new THREE.PlaneGeometry(1, 1, SEG, SEG);
 
 // ---------- shader ----------
@@ -2246,8 +2263,8 @@ function rebuildPlane(seg){
 }
 
 // ---------- quadtree LOD ----------
-let SSE_PX = 3.0;
-let EXAG = 1.4;
+let SSE_PX = DEFAULT_SSE_PX;
+let EXAG = DEFAULT_EXAGGERATION;
 // ---------------- geology raster overlay (BRR1 / QRR1) -----------------
 // Bedrock + Quaternary are rendered as 2D rasters sampled by the terrain
 // fragment shader. Each pixel stores a uint16 class id (0 = nodata, 1..N
@@ -2507,21 +2524,12 @@ renderer.domElement.addEventListener('pointerup', (e) => {
 // ---------------- end click-to-identify -----------------
 
 function tileBoundsWorld(z,x,y){
-  const n = 1 << z;
-  const sz = ROOT_SIZE / n;
-  const xmin = ROOT_X + x*sz - CENTER_X;
-  const ymax = ROOT_Y + ROOT_SIZE - y*sz - CENTER_Y;
-  const ymin = ymax - sz;
-  return { xmin, ymin, xmax: xmin+sz, ymax, size: sz };
+  const b = tileBounds(meta, z, x, y);
+  return { xmin: b.x0 - CENTER_X, ymin: b.y0 - CENTER_Y, xmax: b.x1 - CENTER_X, ymax: b.y1 - CENTER_Y, size: b.size };
 }
 function tileIntersectsSrc(z,x,y){
-  const n = 1 << z;
-  const sz = ROOT_SIZE / n;
-  const xmin = ROOT_X + x*sz;
-  const xmax = xmin + sz;
-  const ymax = ROOT_Y + ROOT_SIZE - y*sz;
-  const ymin = ymax - sz;
-  return !(xmax <= SRC.xMin || xmin >= SRC.xMax || ymax <= SRC.yMin || ymin >= SRC.yMax);
+  const b = tileBounds(meta, z, x, y);
+  return !(b.x1 <= SRC.xMin || b.x0 >= SRC.xMax || b.y1 <= SRC.yMin || b.y0 >= SRC.yMax);
 }
 
 const _v = new THREE.Vector3();
