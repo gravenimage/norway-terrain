@@ -49,3 +49,14 @@ test('geometry builder module exports expected factories', async () => {
   assert.match(source, /export function makeTreeBillboardGeometry\s*\(/);
   assert.match(source, /export const amenityGeometryBuilders\s*=\s*Object\.freeze\s*\(/);
 });
+
+test('shader modules expose non-empty GLSL source', async () => {
+  const terrain = await import('../src/client/shaders/terrain-shader.js');
+
+  assert.equal(typeof terrain.vertexShader, 'string');
+  assert.equal(typeof terrain.fragmentShader, 'string');
+  assert.ok(terrain.vertexShader.length > 100);
+  assert.ok(terrain.fragmentShader.length > 1000);
+  assert.ok(terrain.fragmentShader.includes('uHeight'));
+  assert.ok(terrain.fragmentShader.includes('uExag'));
+});

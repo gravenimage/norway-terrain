@@ -89,6 +89,16 @@ import {
 } from './src/client/core/constants.js';
 import { createWorldTransform } from './src/client/core/coordinates.js';
 import { tileBounds, tileKey as terrainTileKey, tileUrl } from './src/client/terrain/tile-pyramid.js';
+import {
+  createAmenityAreaMaterial,
+  createAmenityPropMaterial,
+  createBuildingMaterial,
+  createCanopyMaterial,
+  createTerrainMaterial,
+  createTreeBillboardMaterial,
+  createTreeMaterial,
+  createWaterMaterial,
+} from './src/client/rendering/material-factory.js';
 
 const {
   buildBenchGeom,
@@ -451,73 +461,6 @@ function roofFor(typeIdx, colorIdx){
 // unit "house" geometry: footprint [-0.5,0.5]² (XY), wall z 0..1, roof z 1..2 (peak).
 // Vertices duplicated per face so each face gets its own flat normal.
 
-const buildingVert = /* glsl */`
-#include <common>
-#include <logdepthbuf_pars_vertex>
-attribute float aPart;
-attribute vec3 iPos;
-attribute vec3 iSize;
-attribute float iRot;
-attribute vec3 iWallColor;
-attribute vec3 iRoofColor;
-attribute float iRoofH;
-uniform float uExag;
-uniform float uExtraLift;
-varying vec3 vColor;
-varying vec3 vWorld;
-varying vec3 vNormal;
-void main(){
-  vec3 p = position;
-  p.x *= iSize.x;
-  p.y *= iSize.y;
-  if (aPart < 0.5) {
-    p.z = p.z * iSize.z;
-  } else {
-    p.z = iSize.z + (p.z - 1.0) * iRoofH;
-  }
-  float c = cos(iRot), s = sin(iRot);
-  vec2 r = vec2(c*p.x - s*p.y, s*p.x + c*p.y);
-  p.x = r.x; p.y = r.y;
-  p.x += iPos.x;
-  p.y += iPos.y;
-  p.z += iPos.z * uExag + uExtraLift;
-  vec3 N = normal;
-  vec2 nr = vec2(c*N.x - s*N.y, s*N.x + c*N.y);
-  N = normalize(vec3(nr, N.z));
-  vNormal = N;
-  vColor  = (aPart < 0.5) ? iWallColor : iRoofColor;
-  vWorld  = p;
-  gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
-  #include <logdepthbuf_vertex>
-}`;
-const buildingFrag = /* glsl */`
-precision highp float;
-#include <common>
-#include <logdepthbuf_pars_fragment>
-varying vec3 vNormal;
-varying vec3 vColor;
-varying vec3 vWorld;
-uniform vec3 uSun;
-uniform vec3 uFogColor;
-uniform float uFogNear;
-uniform float uFogFar;
-uniform float uFadeNear;
-uniform float uFadeFar;
-void main(){
-  #include <logdepthbuf_fragment>
-  vec3 N = normalize(vNormal);
-  float diff = clamp(dot(N, normalize(uSun)), 0.0, 1.0);
-  float wrap = 0.30 + 0.85 * diff;
-  float zBias = clamp(N.z * 0.15 + 0.85, 0.6, 1.0);
-  vec3 col = vColor * wrap * zBias;
-  float dist = length(vWorld - cameraPosition);
-  float fogF = smoothstep(uFogNear, uFogFar, dist);
-  col = mix(col, uFogColor, fogF);
-  float alpha = 1.0 - smoothstep(uFadeNear, uFadeFar, dist);
-  if (alpha < 0.01) discard;
-  gl_FragColor = vec4(col, alpha);
-}`;
-
 const buildingsGroup = new THREE.Group();
 scene.add(buildingsGroup);
 const buildingUniforms = {
@@ -531,13 +474,7 @@ const buildingUniforms = {
   uFadeFar:   { value: 22000 },
 };
 let BLD_RANGE = DEFAULT_BUILDING_RANGE_KM * 1000;
-const buildingMaterial = new THREE.ShaderMaterial({
-  uniforms: buildingUniforms,
-  vertexShader: buildingVert,
-  fragmentShader: buildingFrag,
-  transparent: true,
-  depthWrite: true,
-});
+const buildingMaterial = createBuildingMaterial(buildingUniforms);
 
 const buildingCells = []; // { mesh, cx, cy, radius }
 
@@ -661,56 +598,7 @@ const amenityAreaUniforms = {
   uFadeNear:  { value: 18000 },
   uFadeFar:   { value: 22000 },
 };
-const amenityAreaMaterial = new THREE.ShaderMaterial({
-  uniforms: amenityAreaUniforms,
-  vertexShader: /* glsl */`
-    #include <common>
-    #include <logdepthbuf_pars_vertex>
-    attribute vec3 aColor;
-    uniform float uExag;
-    uniform float uExtraLift;
-    varying vec3 vColor;
-    varying vec3 vNormal;
-    varying vec3 vWorld;
-    void main(){
-      vec3 p = position;
-      p.z = p.z * uExag + uExtraLift;
-      vNormal = normalize(normal);
-      vColor = aColor;
-      vWorld = p;
-      gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
-      #include <logdepthbuf_vertex>
-    }`,
-  fragmentShader: /* glsl */`
-    precision highp float;
-    #include <common>
-    #include <logdepthbuf_pars_fragment>
-    varying vec3 vNormal;
-    varying vec3 vColor;
-    varying vec3 vWorld;
-    uniform vec3 uSun;
-    uniform vec3 uFogColor;
-    uniform float uFogNear, uFogFar;
-    uniform float uFadeNear, uFadeFar;
-    void main(){
-      #include <logdepthbuf_fragment>
-      vec3 N = normalize(vNormal);
-      float diff = clamp(dot(N, normalize(uSun)), 0.0, 1.0);
-      float wrap = 0.55 + 0.55 * diff;
-      vec3 col = vColor * wrap;
-      float dist = length(vWorld - cameraPosition);
-      float fogF = smoothstep(uFogNear, uFogFar, dist);
-      col = mix(col, uFogColor, fogF);
-      float alpha = 1.0 - smoothstep(uFadeNear, uFadeFar, dist);
-      if (alpha < 0.01) discard;
-      gl_FragColor = vec4(col, alpha);
-    }`,
-  transparent: true,
-  depthWrite: true,
-  polygonOffset: true,
-  polygonOffsetFactor: -1,
-  polygonOffsetUnits: -4,
-});
+const amenityAreaMaterial = createAmenityAreaMaterial(amenityAreaUniforms);
 
 // Toon-shaded prop material (instanced, per-vertex color attribute).
 const amenityPropUniforms = {
@@ -722,61 +610,7 @@ const amenityPropUniforms = {
   uFadeNear: { value: 3500 },
   uFadeFar:  { value: 5000 },
 };
-const amenityPropMaterial = new THREE.ShaderMaterial({
-  uniforms: amenityPropUniforms,
-  vertexShader: /* glsl */`
-    #include <common>
-    #include <logdepthbuf_pars_vertex>
-    attribute vec3 color;
-    attribute vec3 iPos;
-    attribute float iRot;
-    attribute float iScale;
-    uniform float uExag;
-    varying vec3 vColor;
-    varying vec3 vNormal;
-    varying vec3 vWorld;
-    void main(){
-      vec3 p = position * iScale;
-      float c = cos(iRot), s = sin(iRot);
-      vec2 r = vec2(c*p.x - s*p.y, s*p.x + c*p.y);
-      p.x = r.x; p.y = r.y;
-      p.x += iPos.x;
-      p.y += iPos.y;
-      p.z += iPos.z * uExag + 0.05;
-      vec3 N = normal;
-      vec2 nr = vec2(c*N.x - s*N.y, s*N.x + c*N.y);
-      vNormal = normalize(vec3(nr, N.z));
-      vColor = color;
-      vWorld = p;
-      gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
-      #include <logdepthbuf_vertex>
-    }`,
-  fragmentShader: /* glsl */`
-    precision highp float;
-    #include <common>
-    #include <logdepthbuf_pars_fragment>
-    varying vec3 vNormal;
-    varying vec3 vColor;
-    varying vec3 vWorld;
-    uniform vec3 uSun, uFogColor;
-    uniform float uFogNear, uFogFar, uFadeNear, uFadeFar;
-    void main(){
-      #include <logdepthbuf_fragment>
-      vec3 N = normalize(vNormal);
-      float d = clamp(dot(N, normalize(uSun)), 0.0, 1.0);
-      // cartoonish 3-band toon
-      float band = d > 0.65 ? 1.0 : (d > 0.30 ? 0.78 : 0.55);
-      vec3 col = vColor * band;
-      float dist = length(vWorld - cameraPosition);
-      float fogF = smoothstep(uFogNear, uFogFar, dist);
-      col = mix(col, uFogColor, fogF);
-      float alpha = 1.0 - smoothstep(uFadeNear, uFadeFar, dist);
-      if (alpha < 0.01) discard;
-      gl_FragColor = vec4(col, alpha);
-    }`,
-  transparent: true,
-  depthWrite: true,
-});
+const amenityPropMaterial = createAmenityPropMaterial(amenityPropUniforms);
 
 function _propBox(w, l, h, ox, oy, oz, color){
   const g = new THREE.BoxGeometry(w, l, h);
@@ -1085,144 +919,6 @@ const TREE_ASPECT = [0.30, 0.36, 0.55, 0.40];
 // a tiny 4-sided trunk box. ~22 tris. All vertices duplicated per face for
 // flat shading (no `flat` qualifier needed).
 
-const treeVert = /* glsl */`
-#include <common>
-#include <logdepthbuf_pars_vertex>
-attribute float aPart;
-attribute vec3 iPos;
-attribute vec2 iSize;        // x = base radius (m), y = height (m)
-attribute float iRot;        // random yaw
-attribute vec3 iCanopyA;     // lower / outer colour
-attribute vec3 iCanopyB;     // upper colour
-uniform float uExag;
-uniform float uExtraLift;
-varying vec3 vColor;
-varying vec3 vNormal;
-varying vec3 vWorld;
-void main(){
-  vec3 p = position;
-  // canopy parts (0,1) scale by (radius, radius, height); trunk (2) scales tightly
-  if (aPart < 1.5) {
-    p.x *= iSize.x;
-    p.y *= iSize.x;
-    p.z *= iSize.y;
-  } else {
-    p.x *= iSize.x * 0.18;
-    p.y *= iSize.x * 0.18;
-    p.z *= iSize.y * 0.18;
-  }
-  float c = cos(iRot), s = sin(iRot);
-  vec2 r = vec2(c*p.x - s*p.y, s*p.x + c*p.y);
-  p.x = r.x; p.y = r.y;
-  p += iPos;
-  // baseZ is already a real terrain elevation; lift it by exag (terrain is exaggerated, so trees should sit on top)
-  p.z = (iPos.z) * uExag + (p.z - iPos.z) + uExtraLift;
-  vec3 N = normal;
-  vec2 nr = vec2(c*N.x - s*N.y, s*N.x + c*N.y);
-  N = normalize(vec3(nr, N.z));
-  vNormal = N;
-  if (aPart < 0.5)      vColor = iCanopyA;       // lower skirt
-  else if (aPart < 1.5) vColor = iCanopyB;       // upper spike
-  else                  vColor = vec3(0.27, 0.18, 0.10); // trunk
-  vWorld = p;
-  gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
-  #include <logdepthbuf_vertex>
-}`;
-const treeFrag = /* glsl */`
-precision highp float;
-#include <common>
-#include <logdepthbuf_pars_fragment>
-varying vec3 vNormal;
-varying vec3 vColor;
-varying vec3 vWorld;
-uniform vec3 uSun;
-uniform vec3 uFogColor;
-uniform float uFogNear;
-uniform float uFogFar;
-uniform float uFadeNear;
-uniform float uFadeFar;
-void main(){
-  #include <logdepthbuf_fragment>
-  vec3 N = normalize(vNormal);
-  float diff = clamp(dot(N, normalize(uSun)), 0.0, 1.0);
-  float wrap = 0.35 + 0.80 * diff;
-  vec3 col = vColor * wrap;
-  float dist = length(vWorld - cameraPosition);
-  float fogF = smoothstep(uFogNear, uFogFar, dist);
-  col = mix(col, uFogColor, fogF);
-  float alpha = 1.0 - smoothstep(uFadeNear, uFadeFar, dist);
-  if (alpha < 0.01) discard;
-  gl_FragColor = vec4(col, alpha);
-}`;
-
-// ---- Billboard impostor LOD (used beyond LOD_NEAR distance) ----
-const treeBbVert = /* glsl */`
-#include <common>
-#include <logdepthbuf_pars_vertex>
-attribute vec2 aQuad;
-attribute vec3 iPos;
-attribute vec2 iSize;
-attribute vec3 iCanopyA;
-attribute vec3 iCanopyB;
-uniform float uExag;
-uniform float uExtraLift;
-varying vec3 vColor;
-varying vec3 vWorld;
-varying vec2 vQuad;
-void main(){
-  // Tree base in world space (Z-up)
-  vec3 base = vec3(iPos.x, iPos.y, iPos.z * uExag + uExtraLift);
-  // Camera-facing horizontal right vector (rotation about Z only -> trees stay vertical)
-  vec3 toCam = cameraPosition - base;
-  toCam.z = 0.0;
-  vec3 right = vec3(-1.0, 0.0, 0.0);
-  float L = length(toCam);
-  if (L > 1e-3) {
-    vec3 fwd = toCam / L;
-    right = normalize(vec3(-fwd.y, fwd.x, 0.0)); // perpendicular to fwd, in horizontal plane
-  }
-  // Width tapers from full at base to 0.30 at top -> conical silhouette
-  float w = iSize.x * 1.30 * (1.0 - aQuad.y * 0.70);
-  float h = iSize.y * 1.05;
-  vec3 world = base + right * aQuad.x * w + vec3(0.0, 0.0, aQuad.y * h);
-  vColor = mix(iCanopyA, iCanopyB, aQuad.y);
-  vWorld = world;
-  vQuad = aQuad;
-  gl_Position = projectionMatrix * viewMatrix * vec4(world, 1.0);
-  #include <logdepthbuf_vertex>
-}`;
-const treeBbFrag = /* glsl */`
-precision highp float;
-#include <common>
-#include <logdepthbuf_pars_fragment>
-varying vec3 vColor;
-varying vec3 vWorld;
-varying vec2 vQuad;
-uniform vec3 uSun;
-uniform vec3 uFogColor;
-uniform float uFogNear;
-uniform float uFogFar;
-uniform float uFadeNear;
-uniform float uFadeFar;
-void main(){
-  #include <logdepthbuf_fragment>
-  // soft conical alpha mask: opaque in centre, fading at outer edge
-  float u = abs(vQuad.x);
-  float taper = 1.0 - vQuad.y * 0.80; // matches geometry taper
-  float r = u / max(0.05, taper);
-  float mask = 1.0 - smoothstep(0.78, 1.0, r);
-  if (mask < 0.05) discard;
-  // simple top-lit shading
-  float light = 0.55 + 0.55 * vQuad.y;
-  vec3 col = vColor * light;
-  float dist = length(vWorld - cameraPosition);
-  float fogF = smoothstep(uFogNear, uFogFar, dist);
-  col = mix(col, uFogColor, fogF);
-  float alpha = mask * (1.0 - smoothstep(uFadeNear, uFadeFar, dist));
-  if (alpha < 0.02) discard;
-  gl_FragColor = vec4(col, alpha);
-}`;
-
 const treesGroup = new THREE.Group();
 scene.add(treesGroup);
 const treeUniforms = {
@@ -1238,107 +934,11 @@ const treeUniforms = {
 let CANOPY_LOD_LO = DEFAULT_CANOPY_LOD_KM * 1000 - TREE_CANOPY_FADE_WIDTH_METRES;   // below: trees opaque, canopy invisible
 let CANOPY_LOD_HI = DEFAULT_CANOPY_LOD_KM * 1000 + TREE_CANOPY_FADE_WIDTH_METRES;   // above: trees gone, canopy opaque
 let CANOPY_RANGE  = DEFAULT_CANOPY_RANGE_KM * 1000;  // far end of canopy visibility
-const treeMaterial = new THREE.ShaderMaterial({
-  uniforms: treeUniforms,
-  vertexShader: treeVert,
-  fragmentShader: treeFrag,
-  transparent: true,
-  depthWrite: true,
-});
-const treeBbMaterial = new THREE.ShaderMaterial({
-  uniforms: treeUniforms,
-  vertexShader: treeBbVert,
-  fragmentShader: treeBbFrag,
-  transparent: true,
-  depthWrite: true,
-  side: THREE.DoubleSide,
-});
+const treeMaterial = createTreeMaterial(treeUniforms);
+const treeBbMaterial = createTreeBillboardMaterial(treeUniforms);
 
 
 // ---------------- canopy carpet -----------------
-const canopyVert = /* glsl */`
-#include <common>
-#include <logdepthbuf_pars_vertex>
-uniform float uExag;
-uniform float uExtraLift;
-varying vec3 vWorld;
-varying float vBaseZ;
-varying float vDist;
-void main(){
-  float baseZ = position.z;
-  // canopy thickness from elevation band (matches forest_polys.py)
-  float h;
-  if (baseZ < 50.0)       h = 15.0;
-  else if (baseZ < 200.0) h = 12.5;
-  else if (baseZ < 400.0) h = 9.0;
-  else if (baseZ < 600.0) h = 6.0;
-  else                    h = 3.5;
-  vec3 world = vec3(position.x, position.y, baseZ * uExag + uExtraLift + h);
-  vWorld = world;
-  vBaseZ = baseZ;
-  vec4 vp = viewMatrix * vec4(world, 1.0);
-  vDist = -vp.z;
-  gl_Position = projectionMatrix * vp;
-  #include <logdepthbuf_vertex>
-}`;
-
-const canopyFrag = /* glsl */`
-precision highp float;
-#include <common>
-#include <logdepthbuf_pars_fragment>
-varying vec3 vWorld;
-varying float vBaseZ;
-varying float vDist;
-uniform vec3 uSun;
-uniform vec3 uFogColor;
-uniform float uFogNear, uFogFar;
-uniform float uFadeNear, uFadeFar;
-uniform float uRangeNear, uRangeFar;
-
-float hash21(vec2 p){
-  p = fract(p * vec2(123.34, 456.21));
-  p += dot(p, p + 45.32);
-  return fract(p.x * p.y);
-}
-float vnoise(vec2 p){
-  vec2 i = floor(p), f = fract(p);
-  float a = hash21(i);
-  float b = hash21(i + vec2(1.0, 0.0));
-  float c = hash21(i + vec2(0.0, 1.0));
-  float d = hash21(i + vec2(1.0, 1.0));
-  vec2 u = f*f*(3.0 - 2.0*f);
-  return mix(mix(a,b,u.x), mix(c,d,u.x), u.y);
-}
-float fbm(vec2 p){
-  return 0.55*vnoise(p) + 0.28*vnoise(p*2.07) + 0.14*vnoise(p*4.17);
-}
-
-void main(){
-  #include <logdepthbuf_fragment>
-  vec3 N = normalize(cross(dFdx(vWorld), dFdy(vWorld)));
-  float n1 = fbm(vWorld.xy * 0.013);
-  float n2 = fbm(vWorld.xy * 0.045 + 17.0);
-  float n  = clamp(n1*0.7 + n2*0.3, 0.0, 1.0);
-  // desaturated greens tuned to terrain bands (emerald -> deep forest -> mossy olive)
-  vec3 dark  = vec3(0.06, 0.17, 0.08);
-  vec3 mid   = vec3(0.10, 0.24, 0.11);
-  vec3 light = vec3(0.17, 0.31, 0.15);
-  vec3 base = mix(dark, mid,  smoothstep(0.20, 0.55, n));
-  base      = mix(base, light, smoothstep(0.60, 0.85, n));
-  // alpine desaturation: shift toward peat-heath grey-green at altitude
-  float alt = clamp((vBaseZ - 350.0) / 350.0, 0.0, 1.0);
-  base = mix(base, base*0.80 + vec3(0.07, 0.07, 0.05)*0.20, alt*0.60);
-  float NdL = clamp(dot(N, uSun), 0.0, 1.0);
-  vec3 col = base * (0.40 + 0.65 * NdL);
-  float fogF = smoothstep(uFogNear, uFogFar, vDist);
-  col = mix(col, uFogColor, fogF);
-  float aIn  = smoothstep(uFadeNear, uFadeFar, vDist);
-  float aOut = 1.0 - smoothstep(uRangeNear, uRangeFar, vDist);
-  float alpha = aIn * aOut;
-  if (alpha < 0.01) discard;
-  gl_FragColor = vec4(col, alpha);
-}`;
-
 const canopyGroup = new THREE.Group();
 scene.add(canopyGroup);
 const canopyUniforms = {
@@ -1353,15 +953,7 @@ const canopyUniforms = {
   uRangeNear: { value: CANOPY_RANGE - 2000 },
   uRangeFar:  { value: CANOPY_RANGE },
 };
-const canopyMaterial = new THREE.ShaderMaterial({
-  uniforms: canopyUniforms,
-  vertexShader: canopyVert,
-  fragmentShader: canopyFrag,
-  transparent: true,
-  depthWrite: true,
-  side: THREE.DoubleSide,
-  extensions: { derivatives: true },
-});
+const canopyMaterial = createCanopyMaterial(canopyUniforms);
 
 const canopyCells = [];
 (async () => {
@@ -1416,49 +1008,7 @@ const waterUniforms = {
   uExag: { value: 1.4 },
   uSun:  { value: SUN.clone() },
 };
-const waterMaterial = new THREE.ShaderMaterial({
-  uniforms: waterUniforms,
-  vertexShader: `
-    #include <common>
-    #include <logdepthbuf_pars_vertex>
-    uniform float uExag;
-    varying vec3 vWorld;
-    varying float vDepthFade;
-    void main(){
-      vec3 p = position;
-      p.z = p.z * uExag + 0.3;
-      vec4 wp = modelMatrix * vec4(p, 1.0);
-      vWorld = wp.xyz;
-      vDepthFade = clamp(p.z / 200.0, 0.0, 1.0);
-      gl_Position = projectionMatrix * viewMatrix * wp;
-      #include <logdepthbuf_vertex>
-    }
-  `,
-  fragmentShader: `
-    #include <common>
-    #include <logdepthbuf_pars_fragment>
-    uniform vec3 uSun;
-    varying vec3 vWorld;
-    varying float vDepthFade;
-    void main(){
-      #include <logdepthbuf_fragment>
-      vec3 dx = dFdx(vWorld);
-      vec3 dy = dFdy(vWorld);
-      vec3 n = normalize(cross(dx, dy));
-      float ndl = max(dot(n, normalize(uSun)), 0.0);
-      vec3 deep    = vec3(0.06, 0.20, 0.36);
-      vec3 shallow = vec3(0.18, 0.42, 0.55);
-      vec3 base = mix(deep, shallow, vDepthFade);
-      vec3 col = base * (0.55 + 0.45 * ndl);
-      gl_FragColor = vec4(col, 1.0);
-    }
-  `,
-  side: THREE.FrontSide,
-  extensions: { derivatives: true },
-  polygonOffset: true,
-  polygonOffsetFactor: -1,
-  polygonOffsetUnits: -4,
-});
+const waterMaterial = createWaterMaterial(waterUniforms);
 
 const waterCells = [];
 (async () => {
@@ -1727,255 +1277,6 @@ let SEG = DEFAULT_SEGMENTS;
 let plane = new THREE.PlaneGeometry(1, 1, SEG, SEG);
 
 // ---------- shader ----------
-const vert = /* glsl */`
-#include <common>
-#include <logdepthbuf_pars_vertex>
-uniform sampler2D uHeight;
-uniform vec2 uOriginXY;
-uniform float uTileSize;
-uniform float uExag;
-uniform vec2 uUVScale;
-uniform vec2 uUVOffset;
-varying vec3 vWorld;
-varying vec2 vUv;
-varying float vH;
-float decode(vec3 c){ return -10000.0 + (c.r*255.0*65536.0 + c.g*255.0*256.0 + c.b*255.0)*0.1; }
-void main(){
-  vUv = uv;
-  vec2 sUv = uUVOffset + uv * uUVScale;
-  vec2 tuv = vec2(sUv.x, 1.0 - sUv.y);
-  float h = decode(texture2D(uHeight, tuv).rgb);
-  h = max(h, 0.0) * uExag;
-  vec2 wxy = uOriginXY + uv * uTileSize;
-  vWorld = vec3(wxy, h);
-  vH = h;
-  gl_Position = projectionMatrix * viewMatrix * vec4(vWorld, 1.0);
-  #include <logdepthbuf_vertex>
-}
-`;
-
-const frag = /* glsl */`
-precision highp float;
-#include <common>
-#include <logdepthbuf_pars_fragment>
-uniform sampler2D uHeight;
-uniform float uTileSize;
-uniform float uExag;
-uniform float uElevMax;
-uniform float uSeg;
-uniform vec3 uSun;
-uniform vec2 uUVScale;
-uniform vec2 uUVOffset;
-uniform float uFogNear;
-uniform float uFogFar;
-uniform vec3 uFogColor;
-// ----- geology overlay uniforms (shared across all terrain materials) -----
-uniform sampler2D uBedTex;
-uniform sampler2D uBedPalette;
-uniform float uBedShow;       // 0 or 1
-uniform float uBedPalN;       // number of palette entries (>= 1)
-uniform sampler2D uQuatTex;
-uniform sampler2D uQuatPalette;
-uniform float uQuatShow;
-uniform float uQuatPalN;
-uniform vec4 uGeoBBox;        // xMin, yMin, xMax-xMin, yMax-yMin (centred world)
-uniform float uGeoOpacity;
-// ----- contour uniforms (shared across all terrain materials) -----
-uniform float uContourShow;       // 0 or 1
-uniform float uContourInterval;   // metres (real world)
-uniform float uContourBoldEvery;  // e.g. 5 -> every 5th line is an index contour
-uniform vec3  uContourColor;
-uniform vec3  uContourBoldColor;
-uniform float uContourOpacity;
-// ----- road overlay uniforms (shared across all terrain materials) -----
-uniform sampler2D uRoadGrid;      // RG float, per-cell (offset, count) into uRoadRefs
-uniform sampler2D uRoadRefs;      // RGBA float, per ref (ax, ay, bx, by) centred world
-uniform sampler2D uRoadCls;       // R8, per ref class (0..4) stored as cls/255
-uniform vec2  uRoadOrigin;        // (xMinC, yMinC) — bottom-left of grid in centred coords
-uniform float uRoadCell;          // metres per grid cell
-uniform vec2  uRoadGridDims;      // (gridW, gridH)
-uniform vec2  uRoadRefsDims;      // (refsTexW, refsTexH)
-uniform float uRoadShow;          // 0 or 1
-uniform float uRoadReady;         // 0 until osm.bin is parsed and textures uploaded
-varying vec3 vWorld;
-varying vec2 vUv;
-varying float vH;
-float decode(vec3 c){ return -10000.0 + (c.r*255.0*65536.0 + c.g*255.0*256.0 + c.b*255.0)*0.1; }
-float sampleH(vec2 uv){
-  vec2 sUv = uUVOffset + uv * uUVScale;
-  vec2 tuv = vec2(sUv.x, 1.0 - sUv.y);
-  return max(decode(texture2D(uHeight, tuv).rgb), 0.0) * uExag;
-}
-vec4 sampleGeo(sampler2D tex, sampler2D pal, float palN, vec2 wxy) {
-  vec2 uv = vec2((wxy.x - uGeoBBox.x) / uGeoBBox.z, (wxy.y - uGeoBBox.y) / uGeoBBox.w);
-  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0) return vec4(0.0);
-  vec2 rg = texture2D(tex, uv).rg;
-  float idF = floor(rg.r * 255.0 + 0.5) + floor(rg.g * 255.0 + 0.5) * 256.0;
-  if (idF < 0.5 || palN < 1.0) return vec4(0.0);
-  vec2 puv = vec2((idF - 0.5) / palN, 0.5);
-  return vec4(texture2D(pal, puv).rgb, 1.0);
-}
-// Compute centre-of-texel UV for a 1-D ref index packed into the (refsTexW × refsTexH) texture.
-vec2 _refUV(float i){
-  float w = uRoadRefsDims.x;
-  float h = uRoadRefsDims.y;
-  float row = floor(i / w);
-  float colF = i - row * w;
-  return vec2((colF + 0.5) / w, (row + 0.5) / h);
-}
-float _distSeg(vec2 p, vec2 a, vec2 b){
-  vec2 d = b - a;
-  float L2 = max(dot(d, d), 1e-6);
-  float t = clamp(dot(p - a, d) / L2, 0.0, 1.0);
-  return length(p - (a + d * t));
-}
-vec3 ramp(float zReal){
-  // Rogaland palette: emerald coastal forest → mossy heath → dark upland heath.
-  // No tans/golds — Norwegian uplands are heather/crowberry/peat, not dry grass.
-  vec3 c0 = vec3(0.07, 0.26, 0.10); //   0– 30 m  emerald coastal forest
-  vec3 c1 = vec3(0.10, 0.28, 0.11); //  30–100 m  deep forest green
-  vec3 c2 = vec3(0.16, 0.28, 0.13); // 100–200 m  mossy green, browner
-  vec3 c3 = vec3(0.18, 0.24, 0.13); // 200–320 m  dark heath (olive-brown)
-  vec3 c4 = vec3(0.20, 0.21, 0.15); // 320–400 m  peat/heath, hint of purple
-  if (zReal <  30.0) return c0;
-  if (zReal < 100.0) return c1;
-  if (zReal < 200.0) return c2;
-  if (zReal < 320.0) return c3;
-  return c4;
-}
-void main(){
-  #include <logdepthbuf_fragment>
-  // identify the current quad cell of the geometry tessellation
-  vec2 q  = floor(vUv * uSeg) / uSeg;
-  float d = 1.0 / uSeg;
-  // sample heights at the 4 corners of the quad
-  float h00 = sampleH(q);
-  float h10 = sampleH(q + vec2(d, 0.0));
-  float h01 = sampleH(q + vec2(0.0, d));
-  float h11 = sampleH(q + vec2(d, d));
-  float havg = 0.25 * (h00 + h10 + h01 + h11);
-  float dxM = d * uTileSize;
-  vec3 n1 = normalize(cross(vec3(dxM, 0.0, h10 - h00), vec3(0.0, dxM, h01 - h00)));
-  vec3 n2 = normalize(cross(vec3(0.0, dxM, h11 - h10), vec3(-dxM, 0.0, h01 - h10)));
-  vec3 N  = normalize(n1 + n2);
-  float diff = clamp(dot(N, normalize(uSun)), 0.0, 1.0);
-
-  float zReal = havg / max(uExag, 0.001);
-  float slope = 1.0 - clamp(N.z, 0.0, 1.0);
-
-  vec3 base = ramp(zReal);
-
-  // Bare granite on steep terrain. Rogaland granite is pale cool grey, almost
-  // off-white where freshly exposed, slightly darker/lichen-mottled lower down.
-  vec3 rockLo = vec3(0.48, 0.49, 0.50); // wet/mossy granite low down
-  vec3 rockHi = vec3(0.66, 0.68, 0.70); // pale Preikestolen / Kjerag granite
-  vec3 rockCol = mix(rockLo, rockHi, smoothstep(150.0, 600.0, zReal));
-  float rockMix = smoothstep(0.20, 0.50, slope);
-  base = mix(base, rockCol, rockMix);
-
-  // Snow above ~400 m; sticks only on gentler slopes.
-  vec3 snow = vec3(0.94, 0.96, 0.99);
-  float snowAlt   = smoothstep(380.0, 470.0, zReal);
-  float snowSlope = 1.0 - smoothstep(0.28, 0.55, slope);
-  float snowF = snowAlt * snowSlope;
-  base = mix(base, snow, snowF);
-
-  if (havg < 1.0) base = vec3(0.10, 0.18, 0.28);
-  vec3 col = base * (0.40 + 0.70 * diff);
-  // --- geology overlay (raster-textured, no separate mesh, no pokethrough) ---
-  if (uBedShow > 0.5) {
-    vec4 g = sampleGeo(uBedTex, uBedPalette, uBedPalN, vWorld.xy);
-    col = mix(col, g.rgb * (0.40 + 0.70 * diff), g.a * uGeoOpacity);
-  }
-  if (uQuatShow > 0.5) {
-    vec4 g = sampleGeo(uQuatTex, uQuatPalette, uQuatPalN, vWorld.xy);
-    col = mix(col, g.rgb * (0.40 + 0.70 * diff), g.a * uGeoOpacity);
-  }
-  // --- contour lines (procedural iso-lines on the height field) ---
-  if (uContourShow > 0.5) {
-    float interval = max(uContourInterval, 0.001);
-    float zReal = sampleH(vUv) / max(uExag, 0.001);
-    float f = zReal / interval;
-    float w = max(fwidth(f), 1e-5);
-    float dist = abs(fract(f + 0.5) - 0.5);
-    // anti-aliased line ~1.5 px wide
-    float lineA = 1.0 - smoothstep(0.0, w * 0.75, dist);
-    // density fade: kill lines when they'd merge into a wash
-    float densityFade = 1.0 - smoothstep(0.4, 0.7, w);
-    lineA *= densityFade;
-    // bold "index" contour every Nth line
-    float every = max(uContourBoldEvery, 1.0);
-    float isBold = step(mod(floor(f + 0.5), every), 0.5);
-    float boldA = (1.0 - smoothstep(0.0, w * 1.6, dist)) * densityFade * isBold;
-    // smooth sea-level mask (avoids hard branch around fwidth)
-    float landMask = smoothstep(0.5, 2.0, zReal);
-    vec3 lineCol = mix(uContourColor, uContourBoldColor, isBold);
-    float a = max(lineA * 0.55, boldA * 0.9) * uContourOpacity * landMask;
-    col = mix(col, lineCol, a);
-  }
-  // --- roads (shader overlay; spatial-grid lookup of nearest OSM segment) ---
-  if (uRoadShow > 0.5 && uRoadReady > 0.5) {
-    vec2 p = vWorld.xy;
-    vec2 cf = (p - uRoadOrigin) / uRoadCell;
-    vec2 cellF = floor(cf);
-    float minDist = 1e9;
-    float minClsF = -1.0;
-    for (int dy = -1; dy <= 1; dy++) {
-      for (int dx = -1; dx <= 1; dx++) {
-        vec2 c = cellF + vec2(float(dx), float(dy));
-        if (c.x < 0.0 || c.y < 0.0 || c.x >= uRoadGridDims.x || c.y >= uRoadGridDims.y) continue;
-        vec2 cellUV = vec2((c.x + 0.5) / uRoadGridDims.x, (c.y + 0.5) / uRoadGridDims.y);
-        vec2 hdr = texture2D(uRoadGrid, cellUV).rg;
-        float off = hdr.r;
-        float cnt = hdr.g;
-        for (int k = 0; k < 128; k++) {
-          if (float(k) >= cnt) break;
-          float ri = off + float(k);
-          vec2 ruv = _refUV(ri);
-          vec4 s = texture2D(uRoadRefs, ruv);
-          float d = _distSeg(p, s.xy, s.zw);
-          if (d < minDist) {
-            minDist = d;
-            minClsF = floor(texture2D(uRoadCls, ruv).r * 255.0 + 0.5);
-          }
-        }
-      }
-    }
-    if (minClsF >= 0.0) {
-      int minCls = int(minClsF);
-      float halfW = (minCls == 0) ? 6.5 :
-                    (minCls == 1) ? 5.0 :
-                    (minCls == 2) ? 4.0 :
-                    (minCls == 3) ? 3.25 : 2.75;
-      float aaw = max(fwidth(minDist), 0.25);
-      float coreT = 1.0 - smoothstep(halfW - aaw, halfW + aaw, minDist);
-      vec3 coreCol = (minCls == 0) ? vec3(0.165, 0.165, 0.175) :
-                     (minCls == 1) ? vec3(0.180, 0.180, 0.185) :
-                     (minCls == 2) ? vec3(0.210, 0.205, 0.180) :
-                     (minCls == 3) ? vec3(0.225, 0.215, 0.195) :
-                                     vec3(0.240, 0.225, 0.205);
-      // subtle per-metre hash grain to break up flat asphalt
-      float grain = fract(sin(dot(floor(vWorld.xy), vec2(12.9898, 78.233))) * 43758.5453);
-      coreCol *= (0.90 + 0.18 * grain);
-      vec3 roadShaded = coreCol * (0.40 + 0.70 * diff);
-      // Thin lighter shoulder for motorways/trunks
-      if (minCls <= 1) {
-        float edgeHi = halfW + 0.6;
-        float edgeT = (1.0 - smoothstep(edgeHi - aaw, edgeHi + aaw, minDist)) - coreT;
-        edgeT = clamp(edgeT, 0.0, 1.0);
-        vec3 edgeCol = vec3(0.55, 0.54, 0.50) * (0.40 + 0.70 * diff);
-        col = mix(col, edgeCol, edgeT * 0.85);
-      }
-      col = mix(col, roadShaded, coreT);
-    }
-  }
-  // distance fog
-  float fogF = smoothstep(uFogNear, uFogFar, length(vWorld - cameraPosition));
-  col = mix(col, uFogColor, fogF);
-  gl_FragColor = vec4(col, 1.0);
-}
-`;
-
 // Shared geology overlay uniforms — all terrain materials get these
 // by reference, so toggling a value affects every tile mesh at once.
 const _dummyGeoTex = new THREE.DataTexture(new Uint8Array([0, 0]), 1, 1, THREE.RGFormat, THREE.UnsignedByteType);
@@ -2029,11 +1330,7 @@ const roadUniforms = {
 };
 
 function makeMaterial(){
-  return new THREE.ShaderMaterial({
-    polygonOffset: true,
-    polygonOffsetFactor: 1,
-    polygonOffsetUnits: 1,
-    uniforms: {
+  return createTerrainMaterial({
       uHeight:   { value: null },
       uOriginXY: { value: new THREE.Vector2() },
       uTileSize: { value: 1 },
@@ -2074,10 +1371,6 @@ function makeMaterial(){
       uRoadRefsDims:  roadUniforms.uRoadRefsDims,
       uRoadShow:      roadUniforms.uRoadShow,
       uRoadReady:     roadUniforms.uRoadReady,
-    },
-    vertexShader: vert,
-    fragmentShader: frag,
-    extensions: { derivatives: true },
   });
 }
 
