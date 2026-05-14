@@ -66,6 +66,18 @@ test('core UI controls mutate the same visible state used by the monolith', asyn
   await page.locator('#showBld').uncheck();
   await page.locator('#showTrees').uncheck();
   await page.locator('#cb-contours').check();
+  await page.evaluate(() => {
+    const geologyPanel = document.getElementById('geo-panel');
+    if (geologyPanel instanceof HTMLDetailsElement) {
+      geologyPanel.open = true;
+    }
+  });
+  await page.locator('#cb-bedrock').check();
+  await page.locator('#cb-quat').check();
+  await page.locator('#r-geo-blend').evaluate((input) => {
+    input.value = '0.35';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+  });
 
   const state = await page.evaluate(() => ({
     exagLabel: document.getElementById('exagv')?.textContent,
@@ -73,6 +85,11 @@ test('core UI controls mutate the same visible state used by the monolith', asyn
     buildingsChecked: document.getElementById('showBld')?.checked,
     treesChecked: document.getElementById('showTrees')?.checked,
     contoursChecked: document.getElementById('cb-contours')?.checked,
+    geologyUi: {
+      bedrock: document.getElementById('cb-bedrock').checked,
+      quat: document.getElementById('cb-quat').checked,
+      blend: document.getElementById('r-geo-blend-val').textContent,
+    },
   }));
 
   assert.equal(state.exagLabel, '2.00');
@@ -80,5 +97,6 @@ test('core UI controls mutate the same visible state used by the monolith', asyn
   assert.equal(state.buildingsChecked, false);
   assert.equal(state.treesChecked, false);
   assert.equal(state.contoursChecked, true);
+  assert.deepEqual(state.geologyUi, { bedrock: true, quat: true, blend: '0.35' });
   assert.deepEqual(unexpectedConsoleMessages(consoleMessages), [], 'UI interactions should not emit unexpected console errors');
 });

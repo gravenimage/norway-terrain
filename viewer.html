@@ -105,7 +105,8 @@ import { parseCanopyBuffer } from './src/client/features/canopy.js';
 import { parseForestBuffer } from './src/client/features/forest.js';
 import { parseWaterBuffer } from './src/client/features/water.js';
 import { parseFaultsBuffer } from './src/client/overlays/faults.js';
-import { parseGeologyRasterBuffer } from './src/client/overlays/geology.js';
+import { createGeologySystem } from './src/client/overlays/geology.js';
+import { attachIdentifyHandlers } from './src/client/overlays/identify.js';
 import { parseRoadsBuffer } from './src/client/overlays/roads.js';
 
 const {
@@ -1267,132 +1268,16 @@ function rebuildPlane(seg){
 // ---------- quadtree LOD ----------
 let SSE_PX = DEFAULT_SSE_PX;
 let EXAG = DEFAULT_EXAGGERATION;
-// ---------------- geology raster overlay (BRR1 / QRR1) -----------------
-// Bedrock + Quaternary are rendered as 2D rasters sampled by the terrain
-// fragment shader. Each pixel stores a uint16 class id (0 = nodata, 1..N
-// = palette index). Eliminates the pokethrough that the polygon-mesh
-// approach suffered from on steep terrain (e.g. Ålgård).
-let bedrockLookup = {};      // "1".. -> {name, color, scale}
-let quaternaryLookup = {};
-let bedrockRaster = null;    // { w, h, ids: Uint16Array, bbox: {xMin,yMin,xMax,yMax} }
-let quatRaster    = null;
-
-function _hexToRgbBytes(hex) {
-  if (!hex || hex.length !== 7) return [180, 180, 180];
-  return [
-    parseInt(hex.slice(1,3), 16),
-    parseInt(hex.slice(3,5), 16),
-    parseInt(hex.slice(5,7), 16),
-  ];
-}
-
-function _buildPaletteTex(lookupObj) {
-  // Find max id, build N x 1 RGBA8 texture (idx 0 = nodata = transparent).
-  let maxId = 0;
-  for (const k of Object.keys(lookupObj)) {
-    const n = parseInt(k, 10);
-    if (n > maxId) maxId = n;
-  }
-  const N = maxId + 1;
-  const data = new Uint8Array(N * 4);
-  for (let i = 0; i < N; i++) {
-    const entry = lookupObj[String(i)];
-    if (entry && entry.color) {
-      const [r, g, b] = _hexToRgbBytes(entry.color);
-      data[i*4 + 0] = r;
-      data[i*4 + 1] = g;
-      data[i*4 + 2] = b;
-      data[i*4 + 3] = 255;
-    } else {
-      data[i*4 + 3] = 0;
-    }
-  }
-  const tex = new THREE.DataTexture(data, N, 1, THREE.RGBAFormat, THREE.UnsignedByteType);
-  tex.minFilter = THREE.NearestFilter;
-  tex.magFilter = THREE.NearestFilter;
-  tex.wrapS = THREE.ClampToEdgeWrapping;
-  tex.wrapT = THREE.ClampToEdgeWrapping;
-  tex.needsUpdate = true;
-  return { tex, N };
-}
-
-async function _loadGeologyRaster(binUrl, paletteUrl, magic) {
-  let buf, lookupObj = {};
-  try {
-    const r = await fetch(binUrl);
-    if (!r.ok) throw new Error(`HTTP ${r.status}`);
-    buf = await r.arrayBuffer();
-  } catch (e) {
-    console.warn(`${binUrl} not loaded:`, e.message);
-    return null;
-  }
-  try {
-    const jr = await fetch(paletteUrl);
-    if (jr.ok) lookupObj = await jr.json();
-  } catch {}
-
-  let parsed;
-  try {
-    parsed = parseGeologyRasterBuffer(buf, magic);
-  } catch (e) {
-    console.warn(`${binUrl}: ${e.message}`);
-    return null;
-  }
-  const { w, h, ids, rgBytes, bbox } = parsed;
-  // RG-packed (uint16 low byte in R, high byte in G) view for the GPU
-  const tex = new THREE.DataTexture(rgBytes, w, h, THREE.RGFormat, THREE.UnsignedByteType);
-  tex.minFilter = THREE.NearestFilter;
-  tex.magFilter = THREE.NearestFilter;
-  tex.wrapS = THREE.ClampToEdgeWrapping;
-  tex.wrapT = THREE.ClampToEdgeWrapping;
-  tex.flipY = false;
-  tex.needsUpdate = true;
-  const palInfo = _buildPaletteTex(lookupObj);
-  console.log(`${binUrl}: ${w}x${h} raster, palette N=${palInfo.N}`);
-  return {
-    w, h, ids, bbox,
-    tex, paletteTex: palInfo.tex, paletteN: palInfo.N,
-    lookup: lookupObj,
-  };
-}
-
-function _setGeoBBoxFrom(r) {
-  // Use the first loaded raster to set the shared bbox. Both layers cover
-  // the same DEM extent so the bbox is identical for either.
-  geoUniforms.uGeoBBox.value.set(
-    r.bbox.xMin,
-    r.bbox.yMin,
-    r.bbox.xMax - r.bbox.xMin,
-    r.bbox.yMax - r.bbox.yMin,
-  );
-}
-
-(async () => {
-  const r = await _loadGeologyRaster('bedrock_raster.bin', 'bedrock_palette.json', 'BRR1');
-  if (!r) return;
-  bedrockRaster = r;
-  bedrockLookup = r.lookup;
-  geoUniforms.uBedTex.value     = r.tex;
-  geoUniforms.uBedPalette.value = r.paletteTex;
-  geoUniforms.uBedPalN.value    = r.paletteN;
-  _setGeoBBoxFrom(r);
-})();
-(async () => {
-  const r = await _loadGeologyRaster('quaternary_raster.bin', 'quaternary_palette.json', 'QRR1');
-  if (!r) return;
-  quatRaster = r;
-  quaternaryLookup = r.lookup;
-  geoUniforms.uQuatTex.value     = r.tex;
-  geoUniforms.uQuatPalette.value = r.paletteTex;
-  geoUniforms.uQuatPalN.value    = r.paletteN;
-  _setGeoBBoxFrom(r);
-})();
-// ---------------- end geology raster overlay -----------------
-
 // ---------------- faults layer (FLT1) -----------------
 const faultsGroup = new THREE.Group();
 faultsGroup.visible = false;
 scene.add(faultsGroup);
+
+// ---------------- geology raster overlay (BRR1 / QRR1) -----------------
+const geologySystem = createGeologySystem({ THREE, geoUniforms, faultsGroup });
+geologySystem.loadBedrock();
+geologySystem.loadQuaternary();
+// ---------------- end geology raster overlay -----------------
 
 const faultMat = new THREE.LineBasicMaterial({ color: 0xe040c0, transparent: true, opacity: 0.95, depthWrite: false });
 
@@ -1425,28 +1310,6 @@ const faultMat = new THREE.LineBasicMaterial({ color: 0xe040c0, transparent: tru
 // ---------------- end faults layer -----------------
 
 // ---------------- click-to-identify geology (raster lookup) -----------------
-function _sampleRaster(r, wx, wy) {
-  if (!r) return 0;
-  const { bbox, w, h, ids } = r;
-  const u = (wx - bbox.xMin) / (bbox.xMax - bbox.xMin);
-  const v = (wy - bbox.yMin) / (bbox.yMax - bbox.yMin);
-  if (u < 0 || u > 1 || v < 0 || v > 1) return 0;
-  let col = Math.floor(u * w);
-  let row = Math.floor(v * h);
-  if (col >= w) col = w - 1;
-  if (row >= h) row = h - 1;
-  return ids[row * w + col];
-}
-
-function _identify(px, py) {
-  const out = {};
-  const bid = _sampleRaster(bedrockRaster, px, py);
-  if (bid > 0 && bedrockLookup[String(bid)]) out.bedrock = bedrockLookup[String(bid)];
-  const qid = _sampleRaster(quatRaster, px, py);
-  if (qid > 0 && quaternaryLookup[String(qid)]) out.quat = quaternaryLookup[String(qid)];
-  return out;
-}
-
 const idPanel = document.createElement('div');
 idPanel.id = 'id-panel';
 idPanel.style.cssText = 'position:fixed;display:none;background:rgba(0,0,0,0.78);color:#cdd;padding:8px 22px 8px 10px;border:1px solid #555;border-radius:6px;font:12px system-ui;z-index:9999;max-width:260px';
@@ -1484,30 +1347,12 @@ function showIdPanel(x, y, info) {
   _idHideTimer = setTimeout(() => { idPanel.style.display = 'none'; }, 8000);
 }
 
-let _downX = 0, _downY = 0, _downT = 0;
-renderer.domElement.addEventListener('pointerdown', (e) => {
-  if (e.button !== 0) return;
-  _downX = e.clientX; _downY = e.clientY; _downT = performance.now();
-});
-renderer.domElement.addEventListener('pointerup', (e) => {
-  if (e.button !== 0) return;
-  if (Math.abs(e.clientX - _downX) > 4 || Math.abs(e.clientY - _downY) > 4) return;
-  if (performance.now() - _downT > 500) return;
-  if (geoUniforms.uBedShow.value < 0.5 && geoUniforms.uQuatShow.value < 0.5) return;
-
-  const rect = renderer.domElement.getBoundingClientRect();
-  const ndc = new THREE.Vector2(
-    ((e.clientX - rect.left) / rect.width) * 2 - 1,
-    -((e.clientY - rect.top) / rect.height) * 2 + 1,
-  );
-  const ray = new THREE.Raycaster();
-  ray.setFromCamera(ndc, camera);
-  const hits = ray.intersectObjects(meshUsed, false);
-  if (!hits.length) return;
-  const wx = hits[0].point.x;
-  const wy = hits[0].point.y;
-  const info = _identify(wx, wy);
-  showIdPanel(e.clientX, e.clientY, info);
+attachIdentifyHandlers({
+  canvas: renderer.domElement,
+  camera,
+  scene,
+  geologySystem,
+  showPanel: showIdPanel,
 });
 // ---------------- end click-to-identify -----------------
 
@@ -1830,11 +1675,11 @@ function _updateForestVsGeology() {
   canopyGroup.visible = treesWanted && !geoOn;
 }
 document.getElementById('cb-bedrock').addEventListener('change', e => {
-  geoUniforms.uBedShow.value = e.target.checked ? 1.0 : 0.0;
+  geologySystem.setBedrockVisible(e.target.checked);
   _updateForestVsGeology();
 });
 document.getElementById('cb-quat').addEventListener('change', e => {
-  geoUniforms.uQuatShow.value = e.target.checked ? 1.0 : 0.0;
+  geologySystem.setQuaternaryVisible(e.target.checked);
   _updateForestVsGeology();
 });
 document.getElementById('cb-faults').addEventListener('change', e => {
@@ -1844,7 +1689,7 @@ const blendInput = document.getElementById('r-geo-blend');
 const blendVal = document.getElementById('r-geo-blend-val');
 blendInput.addEventListener('input', e => {
   const v = parseFloat(e.target.value);
-  geoUniforms.uGeoOpacity.value = v;
+  geologySystem.setOpacity(v);
   blendVal.textContent = v.toFixed(2);
 });
 

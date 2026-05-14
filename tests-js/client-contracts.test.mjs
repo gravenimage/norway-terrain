@@ -91,5 +91,38 @@ test('binary parser modules expose explicit contracts', async () => {
   assert.equal(typeof amenities.parseAmenitiesBuffer, 'function');
   assert.equal(typeof roads.parseRoadsBuffer, 'function');
   assert.equal(typeof geology.parseGeologyRasterBuffer, 'function');
+  assert.equal(typeof geology.createGeologySystem, 'function');
   assert.equal(typeof faults.parseFaultsBuffer, 'function');
+});
+
+test('geology system exposes stateful overlay API and mutates shared uniforms', async () => {
+  const { createGeologySystem } = await import('../src/client/overlays/geology.js');
+  const geoUniforms = {
+    uBedShow: { value: 0.0 },
+    uQuatShow: { value: 0.0 },
+    uGeoOpacity: { value: 0.6 },
+  };
+
+  const system = createGeologySystem({ THREE: {}, geoUniforms, faultsGroup: { visible: false } });
+
+  assert.deepEqual(Object.keys(system).sort(), [
+    'loadBedrock',
+    'loadQuaternary',
+    'sampleAt',
+    'setBedrockVisible',
+    'setOpacity',
+    'setQuaternaryVisible',
+  ]);
+  system.setBedrockVisible(true);
+  system.setQuaternaryVisible(true);
+  system.setOpacity(0.35);
+
+  assert.equal(geoUniforms.uBedShow.value, 1.0);
+  assert.equal(geoUniforms.uQuatShow.value, 1.0);
+  assert.equal(geoUniforms.uGeoOpacity.value, 0.35);
+  assert.deepEqual(system.sampleAt(0, 0), {});
+
+  system.setBedrockVisible(false);
+  system.setQuaternaryVisible(false);
+  assert.equal(system.sampleAt(0, 0), null);
 });
