@@ -19,26 +19,33 @@ export function attachRoadTripPanel({ roadTripSystem }) {
     'min-width:220px', 'backdrop-filter:blur(6px)',
   ].join(';');
   panel.innerHTML = `
-    <div style="font-weight:600;color:#9ec7ff;margin-bottom:6px;letter-spacing:.04em">ROAD TRIP · E39</div>
-    <div style="display:flex;gap:6px;margin-bottom:6px">
-      <button data-rt="tp-mek" style="flex:1">→ Mekjarvik</button>
-      <button data-rt="tp-egs" style="flex:1">→ Egersund</button>
-    </div>
-    <div style="display:flex;gap:6px;margin-bottom:8px">
-      <button data-rt="drive" style="flex:1;background:#1a4070;color:#fff">Drive</button>
-      <button data-rt="stop" style="flex:1">Stop</button>
-    </div>
-    <label style="display:block;margin:4px 0">
-      <span data-rt="height-label">Height: 75 m</span>
-      <input data-rt="height" type="range" min="3" max="300" step="1" value="75" style="width:100%">
-    </label>
-    <label style="display:block;margin:4px 0">
-      <span data-rt="speed-label">Speed: 70 km/h</span>
-      <input data-rt="speed" type="range" min="10" max="250" step="5" value="70" style="width:100%">
-    </label>
-    <div data-rt="status" style="margin-top:6px;font-size:11px;color:#8fb4d8;min-height:1.2em">idle</div>
+    <details class="panel-body" data-panel-key="roadtrip" open>
+      <summary style="letter-spacing:.04em">ROAD TRIP · E39</summary>
+      <div style="display:flex;gap:6px;margin-bottom:6px;margin-top:6px">
+        <button data-rt="tp-mek" style="flex:1">→ Mekjarvik</button>
+        <button data-rt="tp-egs" style="flex:1">→ Egersund</button>
+      </div>
+      <div style="display:flex;gap:6px;margin-bottom:8px">
+        <button data-rt="drive" style="flex:1;background:#1a4070;color:#fff">Drive</button>
+        <button data-rt="stop" style="flex:1">Stop</button>
+      </div>
+      <label style="display:block;margin:4px 0">
+        <span data-rt="height-label">Height: 75 m</span>
+        <input data-rt="height" type="range" min="3" max="300" step="1" value="75" style="width:100%">
+      </label>
+      <label style="display:block;margin:4px 0">
+        <span data-rt="speed-label">Speed: 70 km/h</span>
+        <input data-rt="speed" type="range" min="10" max="250" step="5" value="70" style="width:100%">
+      </label>
+      <div data-rt="status" style="margin-top:6px;font-size:11px;color:#8fb4d8;min-height:1.2em">idle</div>
+    </details>
   `;
   document.body.appendChild(panel);
+  // Run the page-level collapse persistence wiring so this newly-mounted panel honours
+  // and writes to the same localStorage keys as the static panels in viewer.html.
+  if (typeof window !== 'undefined' && typeof window.__wirePanels === 'function') {
+    window.__wirePanels();
+  }
 
   const q = (sel) => panel.querySelector(`[data-rt="${sel}"]`);
   const btnTpMek = q('tp-mek');

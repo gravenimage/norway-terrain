@@ -7,55 +7,104 @@
   html,body { margin:0; height:100%; background:#0a0e16; color:#cdd; font-family:system-ui,sans-serif; overflow:hidden; }
   #hud { position:fixed; left:8px; top:8px; padding:8px 10px; background:rgba(0,0,0,.55); border-radius:6px; font-size:12px; line-height:1.4; pointer-events:none; }
   #hud b { color:#7cf; }
-  #help { position:fixed; right:8px; top:8px; padding:8px 10px; background:rgba(0,0,0,.55); border-radius:6px; font-size:12px; line-height:1.4; }
+  #help { position:fixed; right:8px; top:8px; padding:8px 10px; background:rgba(0,0,0,.55); border-radius:6px; font-size:12px; line-height:1.4; max-width:280px; }
   canvas { display:block; }
   label { display:block; margin-top:4px; }
+
+  /* Collapsible panel bodies. Native <details> with a custom chevron summary. */
+  details.panel-body { margin:0; }
+  details.panel-body > summary {
+    list-style: none;
+    cursor: pointer;
+    user-select: none;
+    font-weight: 600;
+    color: #9ec7ff;
+    padding: 0;
+    pointer-events: auto;
+  }
+  details.panel-body > summary::-webkit-details-marker { display: none; }
+  details.panel-body > summary::after {
+    content: '▾';
+    float: right;
+    margin-left: 10px;
+    transition: transform .15s ease;
+    display: inline-block;
+    color: #79c0ff;
+  }
+  details.panel-body:not([open]) > summary::after { transform: rotate(-90deg); }
+  details.panel-body[open] > summary { margin-bottom: 4px; }
 </style>
 </head>
 <body>
 <div id="hud">
-  <b>Rogaland</b> · DTM 10 m terrain-RGB pyramid<br>
-  drawn: <span id="tcount">0</span> · cache <span id="ccount">0</span> · fps <span id="fps">0</span>
+  <details class="panel-body" data-panel-key="hud" open>
+    <summary><b>Rogaland</b> · DTM 10 m</summary>
+    drawn: <span id="tcount">0</span> · cache <span id="ccount">0</span> · fps <span id="fps">0</span>
+  </details>
 </div>
 <div id="help">
-  drag = rotate · right-drag = pan · wheel = zoom<br>
-  <label>exaggeration <input id="exag" type="range" min="0.5" max="3" step="0.05" value="1.4"> <span id="exagv">1.4</span></label>
-  <label>SSE px <input id="sse" type="range" min="1" max="16" step="0.5" value="3"> <span id="ssev">3</span></label>
-  <label>seg <input id="seg" type="range" min="16" max="128" step="16" value="64"> <span id="segv">64</span></label>
-  <label><input id="showRoads" type="checkbox" checked> roads</label>
-  <label><input id="showTowns" type="checkbox" checked> kommune boundaries</label>
-  <label><input id="showBld" type="checkbox" checked> buildings</label>
-  <label><input id="showTrees" type="checkbox" checked> forest / trees</label>
-  <label><input id="showTileEdges" type="checkbox"> tile edges</label>
-  <label>drape offset (m) <input id="drape" type="range" min="0" max="60" step="1" value="12"> <span id="drapev">12</span></label>
-  <label>building visibility (km) <input id="bldRange" type="range" min="3" max="60" step="1" value="22"> <span id="bldRangev">22</span></label>
-  <label>canopy range (km) <input id="canopyRange" type="range" min="3" max="50" step="1" value="30"> <span id="canopyRangev">30</span></label>
-  <label>canopy LOD switch (km) <input id="canopyLod" type="range" min="0.3" max="6" step="0.1" value="1.5"> <span id="canopyLodv">1.5</span></label>
-  <details id="geo-panel" style="margin-top:6px;border-top:1px solid #444;padding-top:4px;">
-    <summary style="cursor:pointer;font-weight:600;">Geology</summary>
-    <label><input type="checkbox" id="cb-bedrock"> Bedrock</label><br>
-    <label><input type="checkbox" id="cb-quat"> Quaternary</label><br>
-    <label><input type="checkbox" id="cb-faults"> Faults</label><br>
-    <label>Geology blend: <input type="range" id="r-geo-blend" min="0" max="1" step="0.05" value="0.6"></label>
-    <span id="r-geo-blend-val">0.60</span>
-  </details>
-  <details id="contour-panel" style="margin-top:6px;border-top:1px solid #444;padding-top:4px;">
-    <summary style="cursor:pointer;font-weight:600;">Contours</summary>
-    <label><input type="checkbox" id="cb-contours"> Show contour lines</label><br>
-    <label>Interval (m):
-      <select id="contour-interval">
-        <option value="10">10</option>
-        <option value="25">25</option>
-        <option value="50">50</option>
-        <option value="100" selected>100</option>
-        <option value="200">200</option>
-        <option value="500">500</option>
-      </select>
-    </label><br>
-    <label>Opacity: <input type="range" id="r-contour-opacity" min="0" max="1" step="0.05" value="0.75"></label>
-    <span id="r-contour-opacity-val">0.75</span>
+  <details class="panel-body" data-panel-key="help" open>
+    <summary>Controls</summary>
+    drag = rotate · right-drag = pan · wheel = zoom<br>
+    <label>exaggeration <input id="exag" type="range" min="0.5" max="3" step="0.05" value="1.4"> <span id="exagv">1.4</span></label>
+    <label>SSE px <input id="sse" type="range" min="1" max="16" step="0.5" value="3"> <span id="ssev">3</span></label>
+    <label>seg <input id="seg" type="range" min="16" max="128" step="16" value="64"> <span id="segv">64</span></label>
+    <label><input id="showRoads" type="checkbox" checked> roads</label>
+    <label><input id="showTowns" type="checkbox" checked> kommune boundaries</label>
+    <label><input id="showBld" type="checkbox" checked> buildings</label>
+    <label><input id="showTrees" type="checkbox" checked> forest / trees</label>
+    <label><input id="showTileEdges" type="checkbox"> tile edges</label>
+    <label>drape offset (m) <input id="drape" type="range" min="0" max="60" step="1" value="12"> <span id="drapev">12</span></label>
+    <label>building visibility (km) <input id="bldRange" type="range" min="3" max="60" step="1" value="22"> <span id="bldRangev">22</span></label>
+    <label>canopy range (km) <input id="canopyRange" type="range" min="3" max="50" step="1" value="30"> <span id="canopyRangev">30</span></label>
+    <label>canopy LOD switch (km) <input id="canopyLod" type="range" min="0.3" max="6" step="0.1" value="1.5"> <span id="canopyLodv">1.5</span></label>
+    <details id="geo-panel" style="margin-top:6px;border-top:1px solid #444;padding-top:4px;">
+      <summary style="cursor:pointer;font-weight:600;">Geology</summary>
+      <label><input type="checkbox" id="cb-bedrock"> Bedrock</label><br>
+      <label><input type="checkbox" id="cb-quat"> Quaternary</label><br>
+      <label><input type="checkbox" id="cb-faults"> Faults</label><br>
+      <label>Geology blend: <input type="range" id="r-geo-blend" min="0" max="1" step="0.05" value="0.6"></label>
+      <span id="r-geo-blend-val">0.60</span>
+    </details>
+    <details id="contour-panel" style="margin-top:6px;border-top:1px solid #444;padding-top:4px;">
+      <summary style="cursor:pointer;font-weight:600;">Contours</summary>
+      <label><input type="checkbox" id="cb-contours"> Show contour lines</label><br>
+      <label>Interval (m):
+        <select id="contour-interval">
+          <option value="10">10</option>
+          <option value="25">25</option>
+          <option value="50">50</option>
+          <option value="100" selected>100</option>
+          <option value="200">200</option>
+          <option value="500">500</option>
+        </select>
+      </label><br>
+      <label>Opacity: <input type="range" id="r-contour-opacity" min="0" max="1" step="0.05" value="0.75"></label>
+      <span id="r-contour-opacity-val">0.75</span>
+    </details>
   </details>
 </div>
+
+<script>
+// Persist collapsible panel open/closed state across reloads.
+(function() {
+  function wirePanels() {
+    document.querySelectorAll('details.panel-body[data-panel-key]').forEach((d) => {
+      const key = 'panel-open:' + d.dataset.panelKey;
+      const stored = localStorage.getItem(key);
+      if (stored === 'closed') d.open = false;
+      else if (stored === 'open') d.open = true;
+      d.addEventListener('toggle', () => {
+        localStorage.setItem(key, d.open ? 'open' : 'closed');
+      });
+    });
+  }
+  if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', wirePanels);
+  else wirePanels();
+  // Re-run after the road-trip panel mounts (it's appended asynchronously by init.js).
+  window.__wirePanels = wirePanels;
+})();
+</script>
 
 <script type="importmap">
 {
