@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import test from 'node:test';
 import { concatFloat32, readMagic } from '../src/client/core/binary.js';
 import { createWorldTransform } from '../src/client/core/coordinates.js';
@@ -37,4 +38,14 @@ test('height contract documents the current shader assumptions', () => {
   assert.equal(HEIGHT_TEXTURE_CONTRACT.shaderSampleY, 'flipped');
   assert.deepEqual(HEIGHT_TEXTURE_CONTRACT.decodedRangeMetres, [-10000, 14835]);
   assert.ok(HEIGHT_TEXTURE_CONTRACT.uniforms.includes('uHeight'));
+});
+
+test('geometry builder module exports expected factories', async () => {
+  // Node cannot resolve the browser import-map specifier 'three', so verify the module contract textually.
+  const source = await readFile(new URL('../src/client/features/geometry-builders.js', import.meta.url), 'utf8');
+
+  assert.match(source, /export function makeHouseGeometry\s*\(/);
+  assert.match(source, /export function makeTreeGeometry\s*\(/);
+  assert.match(source, /export function makeTreeBillboardGeometry\s*\(/);
+  assert.match(source, /export const amenityGeometryBuilders\s*=\s*Object\.freeze\s*\(/);
 });
