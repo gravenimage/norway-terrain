@@ -85,11 +85,14 @@ test('binary parser modules expose explicit contracts', async () => {
 
   // Function names document the pure parser API consumed by viewer.html.
   assert.equal(typeof buildings.parseBuildingsBuffer, 'function');
+  assert.equal(typeof buildings.createBuildingSystem, 'function');
   assert.equal(typeof forest.parseForestBuffer, 'function');
+  assert.equal(typeof forest.createForestSystem, 'function');
   assert.equal(typeof canopy.parseCanopyBuffer, 'function');
   assert.equal(typeof water.parseWaterBuffer, 'function');
   assert.equal(typeof water.createWaterSystem, 'function');
   assert.equal(typeof amenities.parseAmenitiesBuffer, 'function');
+  assert.equal(typeof amenities.createAmenitiesSystem, 'function');
   assert.equal(typeof roads.parseRoadsBuffer, 'function');
   assert.equal(typeof roads.createRoadSystem, 'function');
   assert.equal(typeof geology.parseGeologyRasterBuffer, 'function');
@@ -153,6 +156,89 @@ test('water system exposes stateful overlay API and mutates shared uniforms', as
   assert.deepEqual(Object.keys(system).sort(), ['load', 'setExaggeration']);
   system.setExaggeration(2.25);
   assert.equal(waterUniforms.uExag.value, 2.25);
+});
+
+test('building system exposes stateful API and mutates shared uniforms and group visibility', async () => {
+  const { createBuildingSystem } = await import('../src/client/features/buildings.js');
+  const buildingsGroup = { visible: true, add() {} };
+  const buildingUniforms = { uExag: { value: 1.4 }, uFadeFar: { value: 22000 }, uFadeNear: { value: 18000 } };
+  const system = createBuildingSystem({ THREE: {}, scene: {}, buildingsGroup, buildingUniforms, buildingMaterial: {} });
+
+  assert.deepEqual(Object.keys(system).sort(), ['cull', 'load', 'setExaggeration', 'setRange', 'setVisible']);
+  system.setVisible(false);
+  system.setExaggeration(2.1);
+  system.setRange(10000);
+
+  assert.equal(buildingsGroup.visible, false);
+  assert.equal(buildingUniforms.uExag.value, 2.1);
+  assert.equal(buildingUniforms.uFadeFar.value, 10000);
+  assert.equal(buildingUniforms.uFadeNear.value, 7000);
+});
+
+test('amenities system exposes stateful API and mutates shared uniforms and group visibility', async () => {
+  const { createAmenitiesSystem } = await import('../src/client/features/amenities.js');
+  const amenitiesGroup = { visible: true, add() {} };
+  const amenityAreaUniforms = { uExag: { value: 1.4 } };
+  const amenityPropUniforms = { uExag: { value: 1.4 } };
+  const system = createAmenitiesSystem({ THREE: {}, scene: {}, amenitiesGroup, amenityAreaUniforms, amenityPropUniforms });
+
+  assert.deepEqual(Object.keys(system).sort(), ['load', 'setExaggeration', 'setVisible']);
+  system.setVisible(false);
+  system.setExaggeration(1.75);
+
+  assert.equal(amenitiesGroup.visible, false);
+  assert.equal(amenityAreaUniforms.uExag.value, 1.75);
+  assert.equal(amenityPropUniforms.uExag.value, 1.75);
+});
+
+test('forest system exposes stateful API and coordinates tree and canopy visibility', async () => {
+  const { createForestSystem } = await import('../src/client/features/forest.js');
+  const treesGroup = { visible: true, add() {} };
+  const canopyGroup = { visible: true, add() {} };
+  const treeUniforms = { uExag: { value: 1.4 }, uFadeNear: { value: 1200 }, uFadeFar: { value: 1800 } };
+  const canopyUniforms = {
+    uExag: { value: 1.4 },
+    uFadeNear: { value: 1200 },
+    uFadeFar: { value: 1800 },
+    uRangeNear: { value: 28000 },
+    uRangeFar: { value: 30000 },
+  };
+  const system = createForestSystem({ THREE: {}, scene: {}, treesGroup, canopyGroup, treeUniforms, canopyUniforms });
+
+  assert.deepEqual(Object.keys(system).sort(), [
+    'cull',
+    'loadCanopy',
+    'loadTrees',
+    'setExaggeration',
+    'setLodSwitch',
+    'setRange',
+    'setVisible',
+    'updateForGeology',
+  ]);
+  system.setVisible(false);
+  assert.equal(treesGroup.visible, false);
+  assert.equal(canopyGroup.visible, false);
+
+  system.setVisible(true);
+  system.updateForGeology({ bedrockVisible: true, quaternaryVisible: false });
+  assert.equal(treesGroup.visible, false);
+  assert.equal(canopyGroup.visible, false);
+
+  system.updateForGeology({ bedrockVisible: false, quaternaryVisible: false });
+  system.setExaggeration(2.5);
+  system.setRange(15000);
+  system.setLodSwitch(900, 1500);
+
+  assert.equal(treesGroup.visible, true);
+  assert.equal(canopyGroup.visible, true);
+  assert.equal(treeUniforms.uExag.value, 2.5);
+  assert.equal(canopyUniforms.uExag.value, 2.5);
+  assert.equal(canopyUniforms.uRangeFar.value, 15000);
+  assert.equal(canopyUniforms.uRangeNear.value, 13000);
+  assert.equal(treeUniforms.uFadeNear.value, 900);
+  assert.equal(treeUniforms.uFadeFar.value, 1500);
+  assert.equal(canopyUniforms.uFadeNear.value, 900);
+  assert.equal(canopyUniforms.uFadeFar.value, 1500);
 });
 
 test('geology system exposes stateful overlay API and mutates shared uniforms', async () => {

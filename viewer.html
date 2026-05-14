@@ -68,13 +68,6 @@
 <script type="module">
 import * as THREE from 'three';
 import { MapControls } from 'three/addons/controls/MapControls.js';
-import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import {
-  amenityGeometryBuilders,
-  makeHouseGeometry,
-  makeTreeBillboardGeometry,
-  makeTreeGeometry,
-} from './src/client/features/geometry-builders.js';
 import {
   CAMERA_STORAGE_KEY,
   DEFAULT_BUILDING_RANGE_KM,
@@ -90,30 +83,18 @@ import {
 import { createWorldTransform } from './src/client/core/coordinates.js';
 import { tileBounds, tileKey as terrainTileKey, tileUrl } from './src/client/terrain/tile-pyramid.js';
 import {
-  createAmenityAreaMaterial,
-  createAmenityPropMaterial,
   createBuildingMaterial,
-  createCanopyMaterial,
   createTerrainMaterial,
-  createTreeBillboardMaterial,
-  createTreeMaterial,
   createWaterMaterial,
 } from './src/client/rendering/material-factory.js';
-import { parseAmenitiesBuffer } from './src/client/features/amenities.js';
-import { parseBuildingsBuffer } from './src/client/features/buildings.js';
-import { parseCanopyBuffer } from './src/client/features/canopy.js';
-import { parseForestBuffer } from './src/client/features/forest.js';
+import { createAmenitiesSystem } from './src/client/features/amenities.js';
+import { createBuildingSystem } from './src/client/features/buildings.js';
+import { createForestSystem } from './src/client/features/forest.js';
 import { createWaterSystem } from './src/client/features/water.js';
 import { createFaultSystem } from './src/client/overlays/faults.js';
 import { createGeologySystem } from './src/client/overlays/geology.js';
 import { attachIdentifyHandlers } from './src/client/overlays/identify.js';
 import { createRoadSystem } from './src/client/overlays/roads.js';
-
-const {
-  buildBenchGeom,
-  buildPicnicTableGeom,
-  buildLighthouseGeom,
-} = amenityGeometryBuilders;
 
 const meta = await (await fetch('tiles/meta.json')).json();
 const world = createWorldTransform(meta);
@@ -210,30 +191,6 @@ const townsGroup = new THREE.Group();
 scene.add(roadsGroup);
 scene.add(townsGroup);
 // ---------- Buildings (stylized Norwegian houses + apartments) ----------
-// 12-colour palette: 0..4 house wood, 5..7 apartments, 8..10 commercial, 11 cabin brown
-const PAL = [
-  [0.61,0.16,0.15], // 0 falu red
-  [0.93,0.90,0.83], // 1 white
-  [0.79,0.63,0.31], // 2 ochre
-  [0.83,0.63,0.09], // 3 mustard
-  [0.42,0.12,0.09], // 4 dark red
-  [0.71,0.69,0.66], // 5 apt grey
-  [0.81,0.77,0.68], // 6 apt beige
-  [0.85,0.78,0.65], // 7 apt cream
-  [0.61,0.59,0.56], // 8 commercial concrete
-  [0.76,0.74,0.70], // 9 commercial light
-  [0.48,0.47,0.44], //10 commercial grey
-  [0.44,0.31,0.17], //11 cabin brown
-];
-function roofFor(typeIdx, colorIdx){
-  if (typeIdx === 0 || typeIdx === 3) return [0.16,0.16,0.18]; // dark slate
-  if (typeIdx === 1) return [0.32,0.30,0.28];
-  return [0.45,0.45,0.43];
-}
-
-// unit "house" geometry: footprint [-0.5,0.5]² (XY), wall z 0..1, roof z 1..2 (peak).
-// Vertices duplicated per face so each face gets its own flat normal.
-
 const buildingsGroup = new THREE.Group();
 scene.add(buildingsGroup);
 const buildingUniforms = {
@@ -248,98 +205,19 @@ const buildingUniforms = {
 };
 let BLD_RANGE = DEFAULT_BUILDING_RANGE_KM * 1000;
 const buildingMaterial = createBuildingMaterial(buildingUniforms);
-
-const buildingCells = []; // { mesh, cx, cy, radius }
-
-(async () => {
-  try {
-    const ab = await (await fetch('buildings.bin')).arrayBuffer();
-    const { n, records, bins } = parseBuildingsBuffer(ab);
-    const houseGeom = makeHouseGeometry();
-    let totalCells = 0;
-    for (const [, idxArr] of bins){
-      const m = idxArr.length;
-      if (!m) continue;
-      const iPos = new Float32Array(m * 3);
-      const iSize = new Float32Array(m * 3);
-      const iRot = new Float32Array(m);
-      const iWallColor = new Float32Array(m * 3);
-      const iRoofColor = new Float32Array(m * 3);
-      const iRoofH = new Float32Array(m);
-      let bxMin = Infinity, byMin = Infinity, bxMax = -Infinity, byMax = -Infinity;
-      for (let k = 0; k < m; k++){
-        const idx = idxArr[k];
-        const cx = records.cx[idx];
-        const cy = records.cy[idx];
-        const bz = records.bz[idx];
-        const L  = records.length[idx];
-        const W  = records.width[idx];
-        const H  = records.height[idx];
-        const a  = records.angle[idx];
-        const t  = records.type[idx];
-        const rf = records.roof[idx];
-        const ci = records.color[idx];
-        iPos[k*3+0] = cx; iPos[k*3+1] = cy; iPos[k*3+2] = bz;
-        iSize[k*3+0] = L; iSize[k*3+1] = W; iSize[k*3+2] = H;
-        iRot[k] = a;
-        const wc = PAL[ci] || PAL[1];
-        iWallColor[k*3+0] = wc[0]; iWallColor[k*3+1] = wc[1]; iWallColor[k*3+2] = wc[2];
-        const rc = roofFor(t, ci);
-        iRoofColor[k*3+0] = rc[0]; iRoofColor[k*3+1] = rc[1]; iRoofColor[k*3+2] = rc[2];
-        // roof height: 0 flat, gabled = min(0.55 * width, 4.5)
-        let rh = 0;
-        if (rf === 1) rh = Math.min(0.55 * W, 4.5);
-        else if (rf === 2) rh = Math.min(0.40 * W, 3.5);
-        iRoofH[k] = rh;
-        if (cx < bxMin) bxMin = cx; if (cy < byMin) byMin = cy;
-        if (cx > bxMax) bxMax = cx; if (cy > byMax) byMax = cy;
-      }
-      const cellCx = (bxMin + bxMax) / 2, cellCy = (byMin + byMax) / 2;
-      const radius = Math.hypot(bxMax - cellCx, byMax - cellCy) + 60; // include eaves
-      const ig = new THREE.InstancedBufferGeometry();
-      ig.setAttribute('position', houseGeom.getAttribute('position'));
-      ig.setAttribute('normal',   houseGeom.getAttribute('normal'));
-      ig.setAttribute('aPart',    houseGeom.getAttribute('aPart'));
-      ig.setAttribute('iPos',       new THREE.InstancedBufferAttribute(iPos, 3));
-      ig.setAttribute('iSize',      new THREE.InstancedBufferAttribute(iSize, 3));
-      ig.setAttribute('iRot',       new THREE.InstancedBufferAttribute(iRot, 1));
-      ig.setAttribute('iWallColor', new THREE.InstancedBufferAttribute(iWallColor, 3));
-      ig.setAttribute('iRoofColor', new THREE.InstancedBufferAttribute(iRoofColor, 3));
-      ig.setAttribute('iRoofH',     new THREE.InstancedBufferAttribute(iRoofH, 1));
-      ig.instanceCount = m;
-      const mesh = new THREE.Mesh(ig, buildingMaterial);
-      mesh.frustumCulled = false; // we cull cells manually
-      buildingsGroup.add(mesh);
-      buildingCells.push({ mesh, cx: cellCx, cy: cellCy, radius });
-      totalCells++;
-    }
-    document.getElementById('hud').insertAdjacentHTML('beforeend',
-      `<br>buildings: ${n.toLocaleString()} in ${totalCells} cells`);
-  } catch (e) {
-    console.warn('buildings.bin not loaded:', e);
-  }
-})();
+const buildingSystem = createBuildingSystem({
+  THREE,
+  scene,
+  buildingsGroup,
+  buildingUniforms,
+  buildingMaterial,
+  elevationMax: ELEV_MAX,
+});
+buildingSystem.load();
 
 // ---------- Civic amenities (pitches, parks, playgrounds, props) ----------
-// Polygon area features (per type id, MUST match amenities_fetch.py).
-const AMENITY_AREA_COLORS = [
-  [0.32, 0.55, 0.24], // 0 PITCH_GRASS  - football green
-  [0.55, 0.35, 0.22], // 1 PITCH_HARD   - clay / asphalt
-  [0.78, 0.36, 0.22], // 2 TRACK        - terracotta running track
-  [0.86, 0.74, 0.34], // 3 PLAYGROUND   - sandy yellow
-  [0.30, 0.52, 0.24], // 4 PARK         - green
-  [0.32, 0.50, 0.22], // 5 GARDEN
-  [0.30, 0.62, 0.85], // 6 POOL         - cyan
-  [0.74, 0.66, 0.40], // 7 SCHOOL_YARD
-  [0.36, 0.46, 0.30], // 8 CEMETERY
-  [0.52, 0.66, 0.28], // 9 GOLF
-  [0.58, 0.58, 0.58], //10 STADIUM
-];
-
 const amenitiesGroup = new THREE.Group();
 scene.add(amenitiesGroup);
-const propsGroup = new THREE.Group();
-amenitiesGroup.add(propsGroup);
 
 const amenityAreaUniforms = {
   uExag:      { value: 1.4 },
@@ -351,9 +229,7 @@ const amenityAreaUniforms = {
   uFadeNear:  { value: 18000 },
   uFadeFar:   { value: 22000 },
 };
-const amenityAreaMaterial = createAmenityAreaMaterial(amenityAreaUniforms);
 
-// Toon-shaded prop material (instanced, per-vertex color attribute).
 const amenityPropUniforms = {
   uExag:     { value: 1.4 },
   uSun:      { value: SUN.clone() },
@@ -363,294 +239,16 @@ const amenityPropUniforms = {
   uFadeNear: { value: 3500 },
   uFadeFar:  { value: 5000 },
 };
-const amenityPropMaterial = createAmenityPropMaterial(amenityPropUniforms);
-
-function _propBox(w, l, h, ox, oy, oz, color){
-  const g = new THREE.BoxGeometry(w, l, h);
-  g.translate(ox, oy, oz + h * 0.5);
-  const n = g.attributes.position.count;
-  const c = new Float32Array(n * 3);
-  for (let i = 0; i < n; i++){ c[i*3]=color[0]; c[i*3+1]=color[1]; c[i*3+2]=color[2]; }
-  g.setAttribute('color', new THREE.BufferAttribute(c, 3));
-  return g;
-}
-function _propCyl(r, h, ox, oy, oz, color, radial=8){
-  const g = new THREE.CylinderGeometry(r, r, h, radial);
-  g.rotateX(Math.PI / 2); // Y-up → Z-up
-  g.translate(ox, oy, oz + h * 0.5);
-  const n = g.attributes.position.count;
-  const c = new Float32Array(n * 3);
-  for (let i = 0; i < n; i++){ c[i*3]=color[0]; c[i*3+1]=color[1]; c[i*3+2]=color[2]; }
-  g.setAttribute('color', new THREE.BufferAttribute(c, 3));
-  return g;
-}
-function _propSphere(r, ox, oy, oz, color){
-  const g = new THREE.SphereGeometry(r, 8, 6);
-  g.translate(ox, oy, oz);
-  const n = g.attributes.position.count;
-  const c = new Float32Array(n * 3);
-  for (let i = 0; i < n; i++){ c[i*3]=color[0]; c[i*3+1]=color[1]; c[i*3+2]=color[2]; }
-  g.setAttribute('color', new THREE.BufferAttribute(c, 3));
-  return g;
-}
-
-const _WOOD = [0.55, 0.35, 0.20];
-const _DARK = [0.28, 0.18, 0.10];
-const _METAL = [0.55, 0.55, 0.58];
-const _STONE = [0.58, 0.56, 0.52];
-const _SAND = [0.86, 0.76, 0.50];
-const _RED = [0.78, 0.22, 0.20];
-const _YEL = [0.92, 0.78, 0.20];
-const _BLU = [0.25, 0.42, 0.78];
-const _WHT = [0.92, 0.92, 0.92];
-
-function buildShelterGeom(){
-  return mergeGeometries([
-    _propCyl(0.07, 2.2, -1.4, -0.9, 0, _DARK),
-    _propCyl(0.07, 2.2,  1.4, -0.9, 0, _DARK),
-    _propCyl(0.07, 2.2, -1.4,  0.9, 0, _DARK),
-    _propCyl(0.07, 2.2,  1.4,  0.9, 0, _DARK),
-    _propBox(3.2, 2.2, 0.12, 0, 0, 2.2, [0.45, 0.28, 0.18]),
-    _propBox(2.6, 0.30, 0.04, 0, -0.7, 0.42, _WOOD),
-  ], false);
-}
-function buildArtworkGeom(){
-  return mergeGeometries([
-    _propBox(0.6, 0.6, 0.3, 0, 0, 0, _STONE),
-    _propCyl(0.18, 2.0, 0, 0, 0.3, _METAL, 12),
-    _propSphere(0.32, 0, 0, 2.5, _METAL),
-  ], false);
-}
-function buildMemorialGeom(){
-  return mergeGeometries([
-    _propBox(1.0, 0.4, 0.15, 0, 0, 0, _STONE),
-    _propBox(0.8, 0.18, 1.2, 0, 0, 0.15, _STONE),
-  ], false);
-}
-function buildSwingGeom(){
-  return mergeGeometries([
-    _propCyl(0.06, 2.5, -1.2, 0, 0, _METAL),
-    _propCyl(0.06, 2.5,  1.2, 0, 0, _METAL),
-    _propBox(2.6, 0.10, 0.10, 0, 0, 2.45, _METAL),
-    _propBox(0.40, 0.18, 0.05, -0.6, 0, 0.5, _RED),
-    _propBox(0.40, 0.18, 0.05,  0.6, 0, 0.5, _BLU),
-    _propBox(0.02, 0.02, 1.9, -0.6, -0.07, 0.5, _DARK),
-    _propBox(0.02, 0.02, 1.9, -0.6,  0.07, 0.5, _DARK),
-    _propBox(0.02, 0.02, 1.9,  0.6, -0.07, 0.5, _DARK),
-    _propBox(0.02, 0.02, 1.9,  0.6,  0.07, 0.5, _DARK),
-  ], false);
-}
-function buildSlideGeom(){
-  return mergeGeometries([
-    _propBox(1.2, 1.2, 1.6, 0, 0.6, 0, _WOOD),
-    _propBox(0.9, 2.4, 0.10, 0, -0.6, 0.4, _RED),
-    _propCyl(0.04, 1.6, -0.5, 1.0, 0, _DARK, 6),
-    _propCyl(0.04, 1.6,  0.5, 1.0, 0, _DARK, 6),
-  ], false);
-}
-function buildRoundaboutGeom(){
-  return mergeGeometries([
-    _propCyl(1.4, 0.18, 0, 0, 0, _RED, 16),
-    _propCyl(0.08, 0.6, 0, 0, 0.18, _METAL, 8),
-  ], false);
-}
-function buildClimbingFrameGeom(){
-  const parts = [];
-  for (const [x,y] of [[-1,-1],[1,-1],[-1,1],[1,1]]) parts.push(_propCyl(0.05, 2.0, x, y, 0, _METAL, 6));
-  parts.push(_propBox(2.0, 0.05, 0.05, 0, -1, 2.0, _METAL));
-  parts.push(_propBox(2.0, 0.05, 0.05, 0,  1, 2.0, _METAL));
-  parts.push(_propBox(0.05, 2.0, 0.05, -1, 0, 2.0, _METAL));
-  parts.push(_propBox(0.05, 2.0, 0.05,  1, 0, 2.0, _METAL));
-  parts.push(_propBox(2.0, 0.04, 0.04, 0, 0, 1.0, _METAL));
-  parts.push(_propBox(0.04, 2.0, 0.04, 0, 0, 1.0, _METAL));
-  return mergeGeometries(parts, false);
-}
-function buildSandpitGeom(){
-  return mergeGeometries([
-    _propBox(3.0, 3.0, 0.12, 0, 0, 0, _SAND),
-    _propBox(3.0, 0.10, 0.18, 0, -1.5, 0, _WOOD),
-    _propBox(3.0, 0.10, 0.18, 0,  1.5, 0, _WOOD),
-    _propBox(0.10, 3.0, 0.18, -1.5, 0, 0, _WOOD),
-    _propBox(0.10, 3.0, 0.18,  1.5, 0, 0, _WOOD),
-  ], false);
-}
-function buildSeesawGeom(){
-  return mergeGeometries([
-    _propCyl(0.10, 0.6, 0, 0, 0, _DARK, 8),
-    _propBox(2.4, 0.20, 0.08, 0, 0, 0.60, _WOOD),
-    _propBox(0.20, 0.20, 0.10, -1.0, 0, 0.68, _RED),
-    _propBox(0.20, 0.20, 0.10,  1.0, 0, 0.68, _BLU),
-  ], false);
-}
-function buildSpringyGeom(){
-  return mergeGeometries([
-    _propCyl(0.06, 0.4, 0, 0, 0, _METAL, 6),
-    _propBox(0.6, 0.25, 0.50, 0, 0, 0.4, _YEL),
-    _propSphere(0.10, 0, -0.20, 0.85, _RED),
-  ], false);
-}
-function buildPgOtherGeom(){
-  return mergeGeometries([
-    _propBox(0.4, 0.4, 0.4, 0, 0, 0, _YEL),
-    _propCyl(0.05, 0.8, 0, 0, 0.4, _METAL, 6),
-  ], false);
-}
-
-// Point type ids (MUST match amenities_fetch.py).
-const PROP_BUILDERS = [
-  buildBenchGeom,         //  0 BENCH
-  buildPicnicTableGeom,   //  1 PICNIC_TABLE
-  buildShelterGeom,       //  2 SHELTER
-  buildArtworkGeom,       //  3 ARTWORK
-  buildMemorialGeom,      //  4 MEMORIAL
-  buildLighthouseGeom,    //  5 LIGHTHOUSE
-  buildSwingGeom,         //  6 PG_SWING
-  buildSlideGeom,         //  7 PG_SLIDE
-  buildRoundaboutGeom,    //  8 PG_ROUNDABOUT
-  buildClimbingFrameGeom, //  9 PG_CLIMBINGFRAME
-  buildSandpitGeom,       // 10 PG_SANDPIT
-  buildSeesawGeom,        // 11 PG_SEESAW
-  buildSpringyGeom,       // 12 PG_SPRINGY
-  buildPgOtherGeom,       // 13 PG_OTHER
-];
-
-function _amHash(x, y){
-  let h = (Math.floor(x * 31.7) ^ Math.floor(y * 19.3)) >>> 0;
-  h = ((h * 0x27d4eb2d) ^ (h >>> 15)) >>> 0;
-  return (h & 0xffff) / 65535;
-}
-
-(async () => {
-  let ab;
-  try { ab = await (await fetch('amenities.bin')).arrayBuffer(); }
-  catch (e) { console.warn('amenities.bin not loaded:', e); return; }
-  let parsed;
-  try { parsed = parseAmenitiesBuffer(ab); }
-  catch (e) { console.warn(e.message); return; }
-
-  // ---- AREAS ----
-  const { nAreas, areas, points } = parsed;
-  const areasByType = new Map();
-  for (const area of areas){
-    const { tid, positions, ring2d } = area;
-    const shape = ring2d.map(([x, y]) => new THREE.Vector2(x, y));
-    let tris;
-    try {
-      tris = THREE.ShapeUtils.triangulateShape(shape, []);
-    } catch (e) { continue; }
-    if (!tris || !tris.length) continue;
-    let arr = areasByType.get(tid);
-    if (!arr) { arr = []; areasByType.set(tid, arr); }
-    arr.push({ positions, tris });
-  }
-
-  // Render order: big background areas first, sporting features painted on top.
-  const RENDER_ORDER = [4, 8, 5, 7, 9, 10, 3, 6, 0, 1, 2];
-  for (let r = 0; r < RENDER_ORDER.length; r++){
-    const tid = RENDER_ORDER[r];
-    const list = areasByType.get(tid);
-    if (!list || !list.length) continue;
-    let totalV = 0, totalI = 0;
-    for (const it of list){ totalV += it.positions.length / 3; totalI += it.tris.length * 3; }
-    const positions = new Float32Array(totalV * 3);
-    const colors    = new Float32Array(totalV * 3);
-    const indices   = (totalV > 65535) ? new Uint32Array(totalI) : new Uint16Array(totalI);
-    const col = AMENITY_AREA_COLORS[tid] || [0.5, 0.5, 0.5];
-    let vOff = 0, iOff = 0;
-    for (const it of list){
-      const baseV = vOff;
-      const pn = it.positions.length / 3;
-      positions.set(it.positions, vOff * 3);
-      for (let v = 0; v < pn; v++){
-        colors[(vOff+v)*3+0] = col[0];
-        colors[(vOff+v)*3+1] = col[1];
-        colors[(vOff+v)*3+2] = col[2];
-      }
-      vOff += pn;
-      for (const t of it.tris){
-        indices[iOff++] = baseV + t[0];
-        indices[iOff++] = baseV + t[1];
-        indices[iOff++] = baseV + t[2];
-      }
-    }
-    const g = new THREE.BufferGeometry();
-    g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-    g.setAttribute('aColor',   new THREE.BufferAttribute(colors, 3));
-    g.setIndex(new THREE.BufferAttribute(indices, 1));
-    g.computeVertexNormals();
-    const mesh = new THREE.Mesh(g, amenityAreaMaterial);
-    mesh.renderOrder = r;       // smaller r drawn first
-    mesh.frustumCulled = false;
-    amenitiesGroup.add(mesh);
-  }
-
-  // ---- POINTS ----
-  const buckets = new Array(PROP_BUILDERS.length);
-  for (let i = 0; i < PROP_BUILDERS.length; i++) buckets[i] = [];
-  for (const { tid, x, y, z } of points){
-    if (tid >= 0 && tid < buckets.length) buckets[tid].push(x, y, z);
-  }
-  let totalProps = 0;
-  for (let tid = 0; tid < PROP_BUILDERS.length; tid++){
-    const arr = buckets[tid];
-    const m = arr.length / 3;
-    if (!m) continue;
-    const geom = PROP_BUILDERS[tid]();
-    const ig = new THREE.InstancedBufferGeometry();
-    ig.setAttribute('position', geom.getAttribute('position'));
-    ig.setAttribute('normal',   geom.getAttribute('normal'));
-    ig.setAttribute('color',    geom.getAttribute('color'));
-    if (geom.index) ig.setIndex(geom.index);
-    const iPos = new Float32Array(m * 3);
-    const iRot = new Float32Array(m);
-    const iScale = new Float32Array(m);
-    for (let k = 0; k < m; k++){
-      const x = arr[k*3+0], y = arr[k*3+1], z = arr[k*3+2];
-      iPos[k*3+0] = x; iPos[k*3+1] = y; iPos[k*3+2] = z;
-      const hx = _amHash(x, y);
-      const hy = _amHash(y, x + 7.3);
-      iRot[k] = hx * Math.PI * 2;
-      iScale[k] = 0.85 + hy * 0.30;
-    }
-    ig.setAttribute('iPos',   new THREE.InstancedBufferAttribute(iPos, 3));
-    ig.setAttribute('iRot',   new THREE.InstancedBufferAttribute(iRot, 1));
-    ig.setAttribute('iScale', new THREE.InstancedBufferAttribute(iScale, 1));
-    ig.instanceCount = m;
-    const mesh = new THREE.Mesh(ig, amenityPropMaterial);
-    mesh.frustumCulled = false;
-    propsGroup.add(mesh);
-    totalProps += m;
-  }
-  amenitiesGroup.visible = document.getElementById('showBld').checked;
-  document.getElementById('hud').insertAdjacentHTML('beforeend',
-    `<br>amenities: ${nAreas.toLocaleString()} areas · ${totalProps.toLocaleString()} props`);
-})();
+const amenitiesSystem = createAmenitiesSystem({
+  THREE,
+  scene,
+  amenitiesGroup,
+  amenityAreaUniforms,
+  amenityPropUniforms,
+});
+amenitiesSystem.load();
 
 // ---------- Forest (low-poly conifers / birches at OSM forest cover) ----------
-// Rogaland forests are pine-dominant (Norway spruce + Scots pine), all
-// cool dark greens with only minor variation. Per-tree colour jitter is
-// applied below so neighbours don't share an identical tint.
-const TREE_PAL = [
-  [0.12, 0.22, 0.12], // 0 spruce
-  [0.13, 0.22, 0.12], // 1 pine
-  [0.13, 0.23, 0.12], // 2 upper pine/birch
-  [0.12, 0.21, 0.11], // 3 stunted pine
-];
-const TREE_PAL_DARK = [
-  [0.07, 0.15, 0.08],
-  [0.08, 0.15, 0.08],
-  [0.08, 0.16, 0.09],
-  [0.07, 0.14, 0.07],
-];
-const TREE_TRUNK = [0.27, 0.18, 0.10]; // brown
-// Aspect = base radius / height. Smaller = taller/narrower (conifer), larger = rounder.
-const TREE_ASPECT = [0.30, 0.36, 0.55, 0.40];
-
-// Unit tree geometry: footprint radius ~0.5, total height 1.0 (in unit space).
-// Two stacked hexagonal cones (lower wider skirt, upper narrower spike) +
-// a tiny 4-sided trunk box. ~22 tris. All vertices duplicated per face for
-// flat shading (no `flat` qualifier needed).
-
 const treesGroup = new THREE.Group();
 scene.add(treesGroup);
 const treeUniforms = {
@@ -660,17 +258,13 @@ const treeUniforms = {
   uFogNear:   { value: FOG_NEAR },
   uFogFar:    { value: FOG_FAR },
   uFogColor:  { value: FOG_COLOR },
-  uFadeNear:  { value: 1200 },   // fade trees OUT as canopy takes over
+  uFadeNear:  { value: 1200 },
   uFadeFar:   { value: 1800 },
 };
-let CANOPY_LOD_LO = DEFAULT_CANOPY_LOD_KM * 1000 - TREE_CANOPY_FADE_WIDTH_METRES;   // below: trees opaque, canopy invisible
-let CANOPY_LOD_HI = DEFAULT_CANOPY_LOD_KM * 1000 + TREE_CANOPY_FADE_WIDTH_METRES;   // above: trees gone, canopy opaque
-let CANOPY_RANGE  = DEFAULT_CANOPY_RANGE_KM * 1000;  // far end of canopy visibility
-const treeMaterial = createTreeMaterial(treeUniforms);
-const treeBbMaterial = createTreeBillboardMaterial(treeUniforms);
+let CANOPY_LOD_LO = DEFAULT_CANOPY_LOD_KM * 1000 - TREE_CANOPY_FADE_WIDTH_METRES;
+let CANOPY_LOD_HI = DEFAULT_CANOPY_LOD_KM * 1000 + TREE_CANOPY_FADE_WIDTH_METRES;
+let CANOPY_RANGE  = DEFAULT_CANOPY_RANGE_KM * 1000;
 
-
-// ---------------- canopy carpet -----------------
 const canopyGroup = new THREE.Group();
 scene.add(canopyGroup);
 const canopyUniforms = {
@@ -685,30 +279,16 @@ const canopyUniforms = {
   uRangeNear: { value: CANOPY_RANGE - 2000 },
   uRangeFar:  { value: CANOPY_RANGE },
 };
-const canopyMaterial = createCanopyMaterial(canopyUniforms);
-
-const canopyCells = [];
-(async () => {
-  try {
-    const ab = await (await fetch('canopy.bin')).arrayBuffer();
-    const parsed = parseCanopyBuffer(ab);
-    for (const { kx, ky, cx, cy, czMin, czMax, radius, verts, indices } of parsed.cells){
-      const geom = new THREE.BufferGeometry();
-      geom.setAttribute('position', new THREE.BufferAttribute(verts, 3));
-      geom.setIndex(new THREE.BufferAttribute(indices, 1));
-      const mesh = new THREE.Mesh(geom, canopyMaterial);
-      mesh.frustumCulled = false;
-      mesh.renderOrder = 1;
-      canopyGroup.add(mesh);
-      canopyCells.push({ mesh, cx, cy, czMin, czMax, radius, kx, ky });
-    }
-    document.getElementById('hud').insertAdjacentHTML('beforeend',
-      `<br>canopy: ${parsed.nCells} cells, ${parsed.totalTris.toLocaleString()} tris`);
-  } catch (e) {
-    console.warn('canopy.bin not loaded:', e);
-  }
-})();
-// ---------------- end canopy carpet -----------------
+const forestSystem = createForestSystem({
+  THREE,
+  scene,
+  treesGroup,
+  canopyGroup,
+  treeUniforms,
+  canopyUniforms,
+  elevationMax: ELEV_MAX,
+});
+forestSystem.loadCanopy();
 
 // ---------------- inland water bodies ----------------
 const waterUniforms = {
@@ -718,166 +298,8 @@ const waterUniforms = {
 const waterMaterial = createWaterMaterial(waterUniforms);
 const waterSystem = createWaterSystem({ THREE, scene, waterUniforms, waterMaterial });
 waterSystem.load();
+forestSystem.loadTrees();
 // ---------------- end inland water -----------------
-
-
-const treeCells = [];
-
-(async () => {
-  try {
-    const ab = await (await fetch('forest.bin')).arrayBuffer();
-    const { n, records, bins } = parseForestBuffer(ab);
-    const treeGeom = makeTreeGeometry();
-    // Procedural densification: each forest quad has ONE seed at its centre;
-    // we scatter K trees uniformly across the 48 m quad → ~24 m effective spacing,
-    // no clustering and no gaps.
-    const K_TREES = 16;
-    const QUAD_M = 48.0;
-    const JITTER_R = QUAD_M * 0.5;  // ±24 m → covers the whole quad
-    const BASE_SINK = 1.2;
-    const jh = (a, b) => {
-      let x = (a * 374761393 ^ b * 668265263) | 0;
-      x = (x ^ (x >>> 13)) * 1274126177 | 0;
-      x = x ^ (x >>> 16);
-      return ((x >>> 0) / 0xffffffff) * 2.0 - 1.0;
-    };
-    let totalCells = 0;
-    let totalInstances = 0;
-    for (const [, idxArr] of bins){
-      const m = idxArr.length;
-      if (!m) continue;
-      const M = m * K_TREES;
-      const iPos       = new Float32Array(M * 3);
-      const iSize      = new Float32Array(M * 2);
-      const iRot       = new Float32Array(M);
-      const iCanopyA   = new Float32Array(M * 3);
-      const iCanopyB   = new Float32Array(M * 3);
-      let bxMin = Infinity, byMin = Infinity, bxMax = -Infinity, byMax = -Infinity;
-      let maxH = 0;
-      let wi = 0;
-      for (let k = 0; k < m; k++){
-        const seedIdx = idxArr[k];
-        const cx0 = records.cx[seedIdx];
-        const cy0 = records.cy[seedIdx];
-        const bz0 = records.bz[seedIdx];
-        const h0  = records.height[seedIdx];
-        const sp  = records.species[seedIdx];
-        const sj  = records.sizeJitter[seedIdx];
-        const cj  = records.colorJitter[seedIdx];
-        // TRE2 corner-z deltas (0.5 m units), or 0 if TRE1 (no deltas):
-        const d00 = records.d00[seedIdx];
-        const d10 = records.d10[seedIdx];
-        const d01 = records.d01[seedIdx];
-        const d11 = records.d11[seedIdx];
-        const aspect = TREE_ASPECT[sp] || 0.4;
-        const A = TREE_PAL[sp] || TREE_PAL[0];
-        const B = TREE_PAL_DARK[sp] || TREE_PAL_DARK[0];
-        for (let s = 0; s < K_TREES; s++){
-          // Stratified jitter: divide quad into K cells, place one tree per cell
-          // with a small in-cell offset. Guarantees uniform coverage.
-          // Then rotate + shift the whole sub-lattice by a per-quad random
-          // amount so adjacent quads don't form a global aligned grid
-          // (visible as stripes on steep slopes).
-          const sub = K_TREES;
-          const nx = Math.ceil(Math.sqrt(sub));
-          const sx = s % nx, sy = (s / nx) | 0;
-          const baseU = (sx + 0.5) / nx - 0.5;     // [-0.5, 0.5]
-          const baseV = (sy + 0.5) / nx - 0.5;
-          const ru = jh(seedIdx, s * 2 + 1) * (0.5 / nx) * 0.95;
-          const rv = jh(seedIdx, s * 2 + 2) * (0.5 / nx) * 0.95;
-          let u = baseU + ru;
-          let v = baseV + rv;
-          // per-quad rotation of the sub-lattice (breaks global row alignment)
-          const theta = jh(seedIdx, 9991) * Math.PI;       // [-π, π]
-          const ct = Math.cos(theta), st = Math.sin(theta);
-          const u2 =  ct * u - st * v;
-          const v2 =  st * u + ct * v;
-          // per-quad sub-lattice shift (breaks shared phase across quads)
-          const offU = jh(seedIdx, 9992) * 0.45;            // ±0.45 of QUAD_M
-          const offV = jh(seedIdx, 9993) * 0.45;
-          const cx = cx0 + (u2 + offU) * QUAD_M;
-          const cy = cy0 + (v2 + offV) * QUAD_M;
-          // Bilinear-interp per-tree z from corner deltas so trees follow the
-          // local slope inside the 48 m quad (eliminates horizontal "shelves"
-          // of trees on steep terrain). u,v in [0,1] across the quad.
-          // Clamp to [0,1] because per-quad rotation/offset can push trees
-          // slightly outside their own quad.
-          const fu = Math.max(0, Math.min(1, (u2 + offU) + 0.5));
-          const fv = Math.max(0, Math.min(1, (v2 + offV) + 0.5));
-          const dz = (d00 * (1 - fu) * (1 - fv))
-                   + (d10 *      fu  * (1 - fv))
-                   + (d01 * (1 - fu) *      fv )
-                   + (d11 *      fu  *      fv );
-          // per-sub-tree size & rotation variation (deterministic)
-          const rh1 = jh(seedIdx, 100 + s);
-          const rh2 = jh(seedIdx, 200 + s);
-          const rh3 = jh(seedIdx, 300 + s);
-          const sjF = sj / 255.0 + rh1 * 0.20;
-          const rJit = 0.80 + Math.max(0, Math.min(1, sjF)) * 0.35;
-          const hJit = 0.85 + Math.max(0, Math.min(1, sjF)) * 0.25;
-          const radius = Math.max(0.6, h0 * aspect * rJit);
-          const height = Math.max(2.0, h0 * hJit);
-          const tShift = ((cj - 128) / 600.0) + rh2 * 0.06;
-          iPos[wi*3+0] = cx;
-          iPos[wi*3+1] = cy;
-          iPos[wi*3+2] = bz0 + dz - BASE_SINK;
-          iSize[wi*2+0] = radius;
-          iSize[wi*2+1] = height;
-          iRot[wi] = (cj / 255.0 + rh3 * 0.5) * Math.PI * 2.0;
-          // Per-tree colour jitter. Use sub-tree-specific hashes so the
-          // K_TREES sub-trees within one quad don't share a tint (no quilt).
-          const jLum = jh(seedIdx, 401 + s) * 0.05;     // overall brightness
-          const jR   = jh(seedIdx, 411 + s) * 0.025;    // red micro-shift
-          const jG   = jh(seedIdx, 421 + s) * 0.035;    // green micro-shift
-          const jB   = jh(seedIdx, 431 + s) * 0.025;    // blue micro-shift
-          iCanopyA[wi*3+0] = Math.max(0.04, Math.min(0.5, A[0] + jLum + jR));
-          iCanopyA[wi*3+1] = Math.max(0.04, Math.min(0.5, A[1] + jLum + jG));
-          iCanopyA[wi*3+2] = Math.max(0.04, Math.min(0.5, A[2] + jLum + jB));
-          iCanopyB[wi*3+0] = Math.max(0.03, Math.min(0.4, B[0] + jLum + jR));
-          iCanopyB[wi*3+1] = Math.max(0.03, Math.min(0.4, B[1] + jLum + jG));
-          iCanopyB[wi*3+2] = Math.max(0.03, Math.min(0.4, B[2] + jLum + jB));
-          if (cx < bxMin) bxMin = cx; if (cy < byMin) byMin = cy;
-          if (cx > bxMax) bxMax = cx; if (cy > byMax) byMax = cy;
-          if (height > maxH) maxH = height;
-          wi++;
-        }
-      }
-      const cellCx = (bxMin + bxMax) / 2, cellCy = (byMin + byMax) / 2;
-      const radius = Math.hypot(bxMax - cellCx, byMax - cellCy) + 30;
-
-      const aPos      = new THREE.InstancedBufferAttribute(iPos, 3);
-      const aSize     = new THREE.InstancedBufferAttribute(iSize, 2);
-      const aRot      = new THREE.InstancedBufferAttribute(iRot, 1);
-      const aCanopyA  = new THREE.InstancedBufferAttribute(iCanopyA, 3);
-      const aCanopyB  = new THREE.InstancedBufferAttribute(iCanopyB, 3);
-
-      const ig = new THREE.InstancedBufferGeometry();
-      ig.setAttribute('position', treeGeom.getAttribute('position'));
-      ig.setAttribute('normal',   treeGeom.getAttribute('normal'));
-      ig.setAttribute('aPart',    treeGeom.getAttribute('aPart'));
-      ig.setAttribute('iPos',     aPos);
-      ig.setAttribute('iSize',    aSize);
-      ig.setAttribute('iRot',     aRot);
-      ig.setAttribute('iCanopyA', aCanopyA);
-      ig.setAttribute('iCanopyB', aCanopyB);
-      ig.instanceCount = M;
-      const mesh = new THREE.Mesh(ig, treeMaterial);
-      mesh.frustumCulled = false;
-      mesh.renderOrder = 1;
-      treesGroup.add(mesh);
-      totalInstances += M;
-
-      // Billboard mesh removed - canopy carpet covers distant view now.
-
-      treeCells.push({ mesh, cx: cellCx, cy: cellCy, radius, maxH, count: m });
-      totalCells++;
-    }
-    document.getElementById('hud').insertAdjacentHTML('beforeend',
-      `<br>trees: ${totalInstances.toLocaleString()} (×${K_TREES} from ${n.toLocaleString()} seeds) in ${totalCells} cells, < ${(CANOPY_LOD_HI/1000).toFixed(1)} km`);
-  } catch (e) {
-    console.warn('forest.bin not loaded:', e);
-  }
-})();
 
 
 const loader = new THREE.TextureLoader();
@@ -1152,53 +574,6 @@ function inFrustum(b){
   return frustum.intersectsBox(_box);
 }
 
-const _cellSphere = new THREE.Sphere();
-const _cellCenter = new THREE.Vector3();
-function cullBuildings(){
-  if (!buildingsGroup.visible) return;
-  for (const cell of buildingCells){
-    _cellCenter.set(cell.cx, cell.cy, ELEV_MAX*EXAG*0.5);
-    _cellSphere.center.copy(_cellCenter);
-    _cellSphere.radius = cell.radius + ELEV_MAX*EXAG*0.5 + 30;
-    const dist = camera.position.distanceTo(_cellCenter);
-    const visible = (dist - cell.radius) < BLD_RANGE && frustum.intersectsSphere(_cellSphere);
-    cell.mesh.visible = visible;
-  }
-}
-
-function cullForest(){
-  // Trees: close-up only, hidden past LOD switch
-  if (!treesGroup.visible){
-    for (const c of treeCells){ c.mesh.visible = false; }
-  } else {
-    for (const c of treeCells){
-      _cellCenter.set(c.cx, c.cy, ELEV_MAX*EXAG*0.5);
-      _cellSphere.center.copy(_cellCenter);
-      _cellSphere.radius = c.radius + ELEV_MAX*EXAG*0.5 + c.maxH;
-      const dist = camera.position.distanceTo(_cellCenter);
-      const near = dist - c.radius;
-      const inFrustumNow = frustum.intersectsSphere(_cellSphere);
-      c.mesh.visible = inFrustumNow && near < CANOPY_LOD_HI;
-    }
-  }
-  // Canopy: fades in past LOD_LO, out at CANOPY_RANGE
-  if (!canopyGroup.visible){
-    for (const c of canopyCells){ c.mesh.visible = false; }
-    return;
-  }
-  for (const c of canopyCells){
-    const cz = (c.czMin + c.czMax) * 0.5 * EXAG + 4.0;
-    _cellCenter.set(c.cx, c.cy, cz);
-    _cellSphere.center.copy(_cellCenter);
-    _cellSphere.radius = c.radius + (c.czMax - c.czMin) * EXAG * 0.5 + 18.0;
-    const dist = camera.position.distanceTo(_cellCenter);
-    const near = dist - c.radius;
-    const far  = dist + c.radius;
-    const inFrustumNow = frustum.intersectsSphere(_cellSphere);
-    c.mesh.visible = inFrustumNow && far > CANOPY_LOD_LO && near < CANOPY_RANGE;
-  }
-}
-
 let drawn = 0;
 function visit(z,x,y){
   if (!tileIntersectsSrc(z,x,y)) return;
@@ -1376,8 +751,8 @@ function loop(){
   frustum.setFromProjectionMatrix(_projMat);
 
   visit(0,0,0);
-  cullBuildings();
-  cullForest();
+  buildingSystem.cull({ camera, frustum, rangeMetres: BLD_RANGE });
+  forestSystem.cull({ camera, frustum });
   evictCache();
   renderer.render(scene, camera);
   renderCompass();
@@ -1393,23 +768,31 @@ function loop(){
 }
 
 const exagEl = document.getElementById('exag');
-exagEl.oninput = () => { EXAG = +exagEl.value; document.getElementById('exagv').textContent = EXAG.toFixed(2); roadSystem.setExaggeration(EXAG); buildingUniforms.uExag.value = EXAG; treeUniforms.uExag.value = EXAG; canopyUniforms.uExag.value = EXAG; waterSystem.setExaggeration(EXAG); amenityAreaUniforms.uExag.value = EXAG; amenityPropUniforms.uExag.value = EXAG; /* faults z is baked at load time — updating fault EXAG requires geometry rebuild (out of scope) */ };
+exagEl.oninput = () => { EXAG = +exagEl.value; document.getElementById('exagv').textContent = EXAG.toFixed(2); roadSystem.setExaggeration(EXAG); buildingSystem.setExaggeration(EXAG); forestSystem.setExaggeration(EXAG); waterSystem.setExaggeration(EXAG); amenitiesSystem.setExaggeration(EXAG); /* faults z is baked at load time — updating fault EXAG requires geometry rebuild (out of scope) */ };
 const sseEl = document.getElementById('sse');
 sseEl.oninput = () => { SSE_PX = +sseEl.value; document.getElementById('ssev').textContent = SSE_PX.toFixed(1); };
 const segEl = document.getElementById('seg');
 segEl.oninput = () => { rebuildPlane(+segEl.value); document.getElementById('segv').textContent = SEG; };
 document.getElementById('showRoads').onchange = e => { roadSystem.setRoadsVisible(e.target.checked); };
 document.getElementById('showTowns').onchange = e => { roadSystem.setTownsVisible(e.target.checked); };
-document.getElementById('showBld').onchange = e => { buildingsGroup.visible = e.target.checked; amenitiesGroup.visible = e.target.checked; };
-document.getElementById('showTrees').onchange = e => { treesGroup.visible = e.target.checked; canopyGroup.visible = e.target.checked; _updateForestVsGeology(); };
+document.getElementById('showBld').onchange = (event) => {
+  buildingSystem.setVisible(event.target.checked);
+  amenitiesSystem.setVisible(event.target.checked);
+};
+document.getElementById('showTrees').onchange = (event) => {
+  forestSystem.setVisible(event.target.checked);
+  forestSystem.updateForGeology({
+    bedrockVisible: Boolean(geoUniforms.uBedShow.value),
+    quaternaryVisible: Boolean(geoUniforms.uQuatShow.value),
+  });
+};
 const drapeEl = document.getElementById('drape');
 drapeEl.oninput = () => { roadSystem.setDrapeOffset(+drapeEl.value); document.getElementById('drapev').textContent = drapeEl.value; };
 const bldRangeEl = document.getElementById('bldRange');
 bldRangeEl.oninput = () => {
   BLD_RANGE = (+bldRangeEl.value) * 1000;
   document.getElementById('bldRangev').textContent = bldRangeEl.value;
-  buildingUniforms.uFadeFar.value = BLD_RANGE;
-  buildingUniforms.uFadeNear.value = Math.max(BLD_RANGE - 4000, BLD_RANGE * 0.7);
+  buildingSystem.setRange(BLD_RANGE);
   amenityAreaUniforms.uFadeFar.value = BLD_RANGE;
   amenityAreaUniforms.uFadeNear.value = Math.max(BLD_RANGE - 4000, BLD_RANGE * 0.7);
 };
@@ -1417,8 +800,7 @@ const canopyRangeEl = document.getElementById('canopyRange');
 canopyRangeEl.oninput = () => {
   CANOPY_RANGE = (+canopyRangeEl.value) * 1000;
   document.getElementById('canopyRangev').textContent = canopyRangeEl.value;
-  canopyUniforms.uRangeFar.value  = CANOPY_RANGE;
-  canopyUniforms.uRangeNear.value = Math.max(CANOPY_RANGE - 2000, CANOPY_RANGE * 0.85);
+  forestSystem.setRange(CANOPY_RANGE);
 };
 const canopyLodEl = document.getElementById('canopyLod');
 canopyLodEl.oninput = () => {
@@ -1426,18 +808,14 @@ canopyLodEl.oninput = () => {
   CANOPY_LOD_LO = Math.max(50, mid - 300);
   CANOPY_LOD_HI = mid + 300;
   document.getElementById('canopyLodv').textContent = canopyLodEl.value;
-  // trees fade OUT across the same band; canopy fades IN
-  treeUniforms.uFadeNear.value   = CANOPY_LOD_LO;
-  treeUniforms.uFadeFar.value    = CANOPY_LOD_HI;
-  canopyUniforms.uFadeNear.value = CANOPY_LOD_LO;
-  canopyUniforms.uFadeFar.value  = CANOPY_LOD_HI;
+  forestSystem.setLodSwitch(CANOPY_LOD_LO, CANOPY_LOD_HI);
 };
 
 function _updateForestVsGeology() {
-  const geoOn = geoUniforms.uBedShow.value > 0.5 || geoUniforms.uQuatShow.value > 0.5;
-  const treesWanted = document.getElementById('showTrees').checked;
-  treesGroup.visible  = treesWanted && !geoOn;
-  canopyGroup.visible = treesWanted && !geoOn;
+  forestSystem.updateForGeology({
+    bedrockVisible: Boolean(geoUniforms.uBedShow.value),
+    quaternaryVisible: Boolean(geoUniforms.uQuatShow.value),
+  });
 }
 document.getElementById('cb-bedrock').addEventListener('change', e => {
   geologySystem.setBedrockVisible(e.target.checked);
