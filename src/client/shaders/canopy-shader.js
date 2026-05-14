@@ -1,3 +1,11 @@
+/**
+ * @file Shader string templates for forest canopy polygons with procedural color variation and altitude desaturation.
+ */
+
+/**
+ * Vertex shader for canopy surfaces that lifts canopy tops above exaggerated terrain according to elevation band.
+ * Expects uExag and uExtraLift uniforms and passes base elevation, world position, and view distance to the fragment stage.
+ */
 export const vertexShader = String.raw`
 #include <common>
 #include <logdepthbuf_pars_vertex>
@@ -24,6 +32,10 @@ void main(){
   #include <logdepthbuf_vertex>
 }`;
 
+/**
+ * Fragment shader for canopy surfaces with derivative normals, procedural forest noise, fog, and range fade.
+ * Expects uSun, uFogColor, uFogNear/uFogFar, uFadeNear/uFadeFar, and uRangeNear/uRangeFar uniforms.
+ */
 export const fragmentShader = String.raw`
 precision highp float;
 #include <common>

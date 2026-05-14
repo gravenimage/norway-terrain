@@ -1,3 +1,11 @@
+/**
+ * @file Constructs the shared Three.js renderer, scene graph, camera, controls, and layer groups for the viewer.
+ */
+
+/**
+ * Creates the viewer scene bundle and returns shared references used by rendering, terrain, and feature systems.
+ * The function centralizes ownership of the scene, camera, renderer, controls, and groups so the render loop can borrow them without recreating resources.
+ */
 export function createViewerScene({ THREE, MapControls, canvas, meta }) {
   const ROOT_SIZE = meta.rootSize ?? meta.size;
 
@@ -65,6 +73,10 @@ export function createViewerScene({ THREE, MapControls, canvas, meta }) {
 
   const SUN = new THREE.Vector3(-0.4, -0.6, 0.85).normalize();
 
+  /**
+   * Resizes the shared camera projection and renderer backbuffer to match the browser viewport.
+   * Keeping this as a returned method lets the application wire resize events without exposing scene construction details.
+   */
   function resize() {
     camera.aspect = innerWidth/innerHeight;
     camera.updateProjectionMatrix();

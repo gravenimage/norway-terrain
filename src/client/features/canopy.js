@@ -1,3 +1,4 @@
+/** @file Pure CANO canopy binary parser for forest canopy mesh cells. */
 import { assertMagic } from '../core/binary.js';
 
 export const CANOPY_CONTRACT = Object.freeze({
@@ -6,6 +7,14 @@ export const CANOPY_CONTRACT = Object.freeze({
   indexType: 'uint16',
 });
 
+/**
+ * Parse the CANO canopy mesh binary without depending on THREE.
+ * Layout is magic CANO, uint32 version, uint32 cell count, then per cell:
+ * int32 kx/ky, float32 center/min/max/radius, uint32 vertex/triangle counts,
+ * tightly packed float32 xyz vertices and uint16 triangle indices with optional
+ * uint16 padding. Returns a plain object with version, nCells, totalTris, and
+ * cells whose verts/indices are sliced typed arrays.
+ */
 export function parseCanopyBuffer(buffer) {
   const view = new DataView(buffer);
   assertMagic(view, CANOPY_CONTRACT.magic);

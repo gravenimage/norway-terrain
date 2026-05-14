@@ -1,11 +1,23 @@
+/** @file THREE.BufferGeometry builders consumed by buildings, forest, and amenities. */
 import * as THREE from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 
+/**
+ * Build the unit house THREE.BufferGeometry consumed by the building system.
+ * Produces position, normal, and aPart attributes where aPart distinguishes
+ * walls from roof faces; building instances add iPos/iSize/iRot/color attrs.
+ */
 export function makeHouseGeometry(){
   const verts = [];   // [x,y,z, nx,ny,nz, part]
+  /**
+   * Append one house triangle with a shared normal and wall/roof part marker.
+   */
   function tri(a, b, c, n, part){
     verts.push(...a, ...n, part, ...b, ...n, part, ...c, ...n, part);
   }
+  /**
+   * Append two triangles forming one house quad with the same part marker.
+   */
   function quad(a, b, c, d, n, part){ tri(a,b,c,n,part); tri(a,c,d,n,part); }
 
   // wall corners (z=0 / z=1)
@@ -47,6 +59,9 @@ export function makeHouseGeometry(){
   return g;
 }
 
+/**
+ * Build a colored box BufferGeometry primitive used by amenity prop builders.
+ */
 function _propBox(w, l, h, ox, oy, oz, color){
   const g = new THREE.BoxGeometry(w, l, h);
   g.translate(ox, oy, oz + h * 0.5);
@@ -56,6 +71,9 @@ function _propBox(w, l, h, ox, oy, oz, color){
   g.setAttribute('color', new THREE.BufferAttribute(c, 3));
   return g;
 }
+/**
+ * Build a colored Z-up cylinder BufferGeometry primitive for amenity props.
+ */
 function _propCyl(r, h, ox, oy, oz, color, radial=8){
   const g = new THREE.CylinderGeometry(r, r, h, radial);
   g.rotateX(Math.PI / 2); // Y-up → Z-up
@@ -66,6 +84,9 @@ function _propCyl(r, h, ox, oy, oz, color, radial=8){
   g.setAttribute('color', new THREE.BufferAttribute(c, 3));
   return g;
 }
+/**
+ * Build a colored sphere BufferGeometry primitive for amenity props.
+ */
 function _propSphere(r, ox, oy, oz, color){
   const g = new THREE.SphereGeometry(r, 8, 6);
   g.translate(ox, oy, oz);
@@ -86,6 +107,10 @@ const _YEL = [0.92, 0.78, 0.20];
 const _BLU = [0.25, 0.42, 0.78];
 const _WHT = [0.92, 0.92, 0.92];
 
+/**
+ * Build the bench THREE.BufferGeometry consumed by amenity prop instancing;
+ * returns merged colored box primitives with position, normal, and color attrs.
+ */
 export function buildBenchGeom(){
   return mergeGeometries([
     _propBox(1.8, 0.35, 0.06, 0, 0, 0.42, _WOOD),
@@ -95,6 +120,10 @@ export function buildBenchGeom(){
   ], false);
 }
 
+/**
+ * Build the picnic-table THREE.BufferGeometry consumed by amenity prop
+ * instancing; returns merged colored box primitives with per-vertex colors.
+ */
 export function buildPicnicTableGeom(){
   return mergeGeometries([
     _propBox(2.0, 0.9, 0.06, 0, 0, 0.74, _WOOD),
@@ -105,6 +134,10 @@ export function buildPicnicTableGeom(){
   ], false);
 }
 
+/**
+ * Build the lighthouse THREE.BufferGeometry consumed by amenity prop instancing;
+ * returns merged colored cylinders/sphere with per-vertex color attributes.
+ */
 export function buildLighthouseGeom(){
   return mergeGeometries([
     _propCyl(1.4, 4.5, 0, 0, 0, _WHT, 14),
@@ -121,14 +154,28 @@ export const amenityGeometryBuilders = Object.freeze({
   buildLighthouseGeom,
 });
 
+/**
+ * Build the detailed tree THREE.BufferGeometry consumed by the forest system.
+ * Produces position, normal, and aPart attributes where aPart identifies lower
+ * canopy, upper canopy, and trunk regions for the tree shader.
+ */
 export function makeTreeGeometry(){
   const verts = []; // [x,y,z, nx,ny,nz, part]   part: 0 lower 1 upper 2 trunk
+  /**
+   * Append one tree triangle with a shared normal and canopy/trunk part marker.
+   */
   function tri(a, b, c, n, part){
     verts.push(a[0],a[1],a[2], n[0],n[1],n[2], part,
                b[0],b[1],b[2], n[0],n[1],n[2], part,
                c[0],c[1],c[2], n[0],n[1],n[2], part);
   }
+  /**
+   * Append two triangles forming one tree quad with the same part marker.
+   */
   function quad(a, b, c, d, n, part){ tri(a,b,c,n,part); tri(a,c,d,n,part); }
+  /**
+   * Compute a normalized face normal for tree canopy and trunk triangles.
+   */
   function nrm(a, b, c){
     const ax = b[0]-a[0], ay = b[1]-a[1], az = b[2]-a[2];
     const bx = c[0]-a[0], by = c[1]-a[1], bz = c[2]-a[2];
@@ -140,6 +187,9 @@ export function makeTreeGeometry(){
   }
 
   const SIDES = 6;
+  /**
+   * Generate a six-sided horizontal ring used to shape the conifer canopy.
+   */
   function ring(z, r){
     const out = [];
     for (let i = 0; i < SIDES; i++){
@@ -198,6 +248,11 @@ export function makeTreeGeometry(){
   return g;
 }
 
+/**
+ * Build the tree billboard THREE.BufferGeometry for forest impostors.
+ * Produces aQuad corner coordinates plus a dummy position attribute and uint16
+ * index buffer; forest shader expands instances in camera-facing space.
+ */
 export function makeTreeBillboardGeometry(){
   // 4 verts: bottom-left, bottom-right, top-right, top-left
   // aQuad.x in [-1, 1], aQuad.y in [0, 1] (0 = base, 1 = top)

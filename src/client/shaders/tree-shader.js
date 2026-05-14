@@ -1,3 +1,11 @@
+/**
+ * @file Shader string templates for close tree meshes and distant billboards with fogged alpha fades.
+ */
+
+/**
+ * Vertex shader for instanced tree meshes that scales canopy and trunk parts around terrain-anchored positions.
+ * Expects aPart, iPos, iSize, iRot, iCanopyA, iCanopyB attributes plus uExag and uExtraLift uniforms.
+ */
 export const treeVertexShader = String.raw`
 #include <common>
 #include <logdepthbuf_pars_vertex>
@@ -42,6 +50,10 @@ void main(){
   #include <logdepthbuf_vertex>
 }`;
 
+/**
+ * Fragment shader for close tree meshes with wrapped sun lighting, fog, and distance fade.
+ * Expects uSun, uFogColor, uFogNear/uFogFar, and uFadeNear/uFadeFar uniforms shared with feature materials.
+ */
 export const treeFragmentShader = String.raw`
 precision highp float;
 #include <common>
@@ -69,6 +81,10 @@ void main(){
   gl_FragColor = vec4(col, alpha);
 }`;
 
+/**
+ * Vertex shader for distant tree billboards that rotate around Z to face the camera while staying upright.
+ * Expects aQuad, iPos, iSize, iCanopyA, iCanopyB attributes plus uExag and uExtraLift uniforms.
+ */
 export const billboardVertexShader = String.raw`
 #include <common>
 #include <logdepthbuf_pars_vertex>
@@ -105,6 +121,10 @@ void main(){
   #include <logdepthbuf_vertex>
 }`;
 
+/**
+ * Fragment shader for tree billboards that applies a soft conical alpha mask, top lighting, fog, and distance fade.
+ * Expects uSun, uFogColor, uFogNear/uFogFar, and uFadeNear/uFadeFar uniforms for consistent impostor blending.
+ */
 export const billboardFragmentShader = String.raw`
 precision highp float;
 #include <common>

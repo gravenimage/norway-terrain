@@ -1,3 +1,4 @@
+/** @file BLD1 building parser and stateful instanced building scene system. */
 import { assertMagic } from '../core/binary.js';
 
 export const BUILDING_CONTRACT = Object.freeze({
@@ -22,12 +23,22 @@ const PAL = [
   [0.44,0.31,0.17], //11 cabin brown
 ];
 
+/**
+ * Choose a roof color from parsed BLD1 type/color indices for instanced houses.
+ */
 function roofFor(typeIdx, colorIdx){
   if (typeIdx === 0 || typeIdx === 3) return [0.16,0.16,0.18]; // dark slate
   if (typeIdx === 1) return [0.32,0.30,0.28];
   return [0.45,0.45,0.43];
 }
 
+/**
+ * Parse the BLD1 building seed binary without depending on THREE.
+ * Layout is magic BLD1, uint32 record count, then 32-byte records containing
+ * float32 cx/cy/bz/length/width/height/angle plus uint8 type/roof/color. Returns
+ * a plain object with n, typed-array columns, and 8000 m cell bins of record
+ * indices for culling.
+ */
 export function parseBuildingsBuffer(buffer) {
   const view = new DataView(buffer);
   assertMagic(view, BUILDING_CONTRACT.magic);
@@ -71,6 +82,13 @@ export function parseBuildingsBuffer(buffer) {
   return { n, records, bins };
 }
 
+/**
+ * Create the stateful building renderer. THREE, buildingsGroup,
+ * buildingUniforms, and buildingMaterial are shared references; buildingCells
+ * is owned culling state. Scene is accepted for API symmetry. Uniforms are
+ * mutated in place, load() is fire-and-forget, and visibility is combined with
+ * amenities elsewhere through the shared showBld toggle.
+ */
 export function createBuildingSystem({ THREE, scene, buildingsGroup, buildingUniforms, buildingMaterial, elevationMax = 14835 }) {
   void scene;
   const buildingCells = [];
@@ -78,6 +96,11 @@ export function createBuildingSystem({ THREE, scene, buildingsGroup, buildingUni
   const cellCenter = THREE.Vector3 ? new THREE.Vector3() : null;
 
   return {
+    /**
+     * Fire-and-forget load() for buildings.bin: imports the house geometry,
+     * parses BLD1 seeds, creates one instanced mesh per 8000 m bin, adds meshes
+     * to buildingsGroup, and records cell bounds for range/frustum culling.
+     */
     async load() {
       try {
         const [{ makeHouseGeometry }, ab] = await Promise.all([
@@ -148,6 +171,10 @@ export function createBuildingSystem({ THREE, scene, buildingsGroup, buildingUni
         console.warn('buildings.bin not loaded:', e);
       }
     },
+    /**
+     * Update per-cell mesh visibility using the caller-supplied range threshold,
+     * the frustum, and elevationMax-inflated bounding spheres.
+     */
     cull({ camera, frustum, rangeMetres }) {
       if (!buildingsGroup.visible || !cellCenter || !cellSphere) return;
       const exag = buildingUniforms.uExag.value;
@@ -160,13 +187,25 @@ export function createBuildingSystem({ THREE, scene, buildingsGroup, buildingUni
         cell.mesh.visible = visible;
       }
     },
+    /**
+     * Set building group visibility; the application pairs this with amenities
+     * for the combined showBld visibility invariant.
+     */
     setVisible(visible) {
       buildingsGroup.visible = visible;
     },
+    /**
+     * Mutate building fade uniforms in place. Far equals rangeMetres and near is
+     * max(rangeMetres - 4000, rangeMetres * 0.7), the building LOD fade window.
+     */
     setRange(rangeMetres) {
       buildingUniforms.uFadeFar.value = rangeMetres;
       buildingUniforms.uFadeNear.value = Math.max(rangeMetres - 4000, rangeMetres * 0.7);
     },
+    /**
+     * Mutate the shared building exaggeration uniform in place for all building
+     * instances.
+     */
     setExaggeration(value) {
       buildingUniforms.uExag.value = value;
     },

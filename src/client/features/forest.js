@@ -1,3 +1,4 @@
+/** @file TRE1/TRE2 forest parser plus stateful tree/canopy scene system. */
 import { readMagic } from '../core/binary.js';
 import { parseCanopyBuffer } from './canopy.js';
 
@@ -24,6 +25,13 @@ const TREE_PAL_DARK = [
 ];
 const TREE_ASPECT = [0.30, 0.36, 0.55, 0.40];
 
+/**
+ * Parse the TRE1/TRE2 forest seed binary without depending on THREE.
+ * Layout is magic TRE1 or TRE2, uint32 record count, then 20-byte TRE1 records
+ * or 24-byte TRE2 records with float32 cx/cy/bz/height, uint8 species/jitters,
+ * and optional int8 corner deltas scaled by 0.5 m. Returns a plain object with
+ * magic, recordBytes, typed-array columns, and 4000 m cell bins of seed indices.
+ */
 export function parseForestBuffer(buffer) {
   const view = new DataView(buffer);
   const magic = readMagic(view, 0, 4);
@@ -73,6 +81,13 @@ export function parseForestBuffer(buffer) {
   return { magic, hasCornerDeltas, n, recordBytes, records, bins };
 }
 
+/**
+ * Create the coupled forest/canopy renderer. THREE, groups, and uniforms are
+ * shared references; treeCells/canopyCells and LOD state are owned here. Scene
+ * is accepted for API symmetry. Uniforms are mutated in place, loadTrees() and
+ * loadCanopy() are fire-and-forget, and updateForGeology couples forest
+ * visibility to geology overlays.
+ */
 export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, treeUniforms, canopyUniforms, elevationMax = 14835 }) {
   void scene;
   const treeCells = [];
@@ -85,6 +100,10 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
   let canopyLodHi = canopyUniforms.uFadeFar.value;
   let canopyRange = canopyUniforms.uRangeFar.value;
 
+  /**
+   * Apply the forest + geology invariant: tree and canopy groups are visible
+   * only when requested and no bedrock/quaternary geology overlay is active.
+   */
   function applyVisibility() {
     const visible = visibleWanted && !geologyVisible;
     treesGroup.visible = visible;
@@ -92,6 +111,12 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
   }
 
   return {
+    /**
+     * Fire-and-forget loadTrees() for forest.bin: parses TRE1/TRE2 seeds,
+     * expands each seed into K_TREES=16 instances over a 48 m quad with a 1.2 m
+     * base sink, creates one instanced mesh per 4000 m bin, and records culling
+     * bounds. Initial tree visibility is limited by canopyLodHi.
+     */
     async loadTrees() {
       try {
         const [{ makeTreeGeometry }, materials, ab] = await Promise.all([
@@ -105,6 +130,10 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
         const K_TREES = 16;
         const QUAD_M = 48.0;
         const BASE_SINK = 1.2;
+        /**
+         * Deterministic jitter hash for repeatable per-seed placement, rotation,
+         * scale, and color variation without storing extra forest attributes.
+         */
         const jh = (a, b) => {
           let x = (a * 374761393 ^ b * 668265263) | 0;
           x = (x ^ (x >>> 13)) * 1274126177 | 0;
@@ -227,6 +256,11 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
         console.warn('forest.bin not loaded:', e);
       }
     },
+    /**
+     * Fire-and-forget loadCanopy() for canopy.bin: parses CANO cells, creates one
+     * THREE.BufferGeometry mesh per cell, adds meshes to canopyGroup, and stores
+     * cell bounds for LOD/range culling.
+     */
     async loadCanopy() {
       try {
         const [materials, ab] = await Promise.all([
@@ -251,6 +285,11 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
         console.warn('canopy.bin not loaded:', e);
       }
     },
+    /**
+     * Update tree and canopy cell visibility. Trees render below canopyLodHi;
+     * canopy cells render when beyond canopyLodLo and nearer than canopyRange,
+     * with all tests using elevation-inflated frustum spheres.
+     */
     cull({ camera, frustum }) {
       if (!cellCenter || !cellSphere) return;
       const exag = treeUniforms.uExag.value;
@@ -283,15 +322,27 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
         c.mesh.visible = inFrustumNow && far > canopyLodLo && near < canopyRange;
       }
     },
+    /**
+     * Record requested forest visibility and reapply the geology coupling so
+     * geology overlays can still suppress tree and canopy groups.
+     */
     setVisible(visible) {
       visibleWanted = visible;
       applyVisibility();
     },
+    /**
+     * Mutate canopy range uniforms in place. Far equals rangeMetres and near is
+     * max(rangeMetres - 2000, rangeMetres * 0.85), the canopy range fade window.
+     */
     setRange(rangeMetres) {
       canopyRange = rangeMetres;
       canopyUniforms.uRangeFar.value  = canopyRange;
       canopyUniforms.uRangeNear.value = Math.max(canopyRange - 2000, canopyRange * 0.85);
     },
+    /**
+     * Mutate tree/canopy LOD uniforms in place and update owned thresholds:
+     * canopyLodLo hides canopy too near the camera, canopyLodHi caps tree range.
+     */
     setLodSwitch(loMetres, hiMetres) {
       canopyLodLo = loMetres;
       canopyLodHi = hiMetres;
@@ -300,10 +351,18 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
       canopyUniforms.uFadeNear.value = canopyLodLo;
       canopyUniforms.uFadeFar.value  = canopyLodHi;
     },
+    /**
+     * Mutate shared tree and canopy exaggeration uniforms in place so both
+     * forest layers track terrain scale together.
+     */
     setExaggeration(value) {
       treeUniforms.uExag.value = value;
       canopyUniforms.uExag.value = value;
     },
+    /**
+     * Coupling hook from the geology system: any visible bedrock or quaternary
+     * overlay suppresses forest and canopy visibility until overlays are hidden.
+     */
     updateForGeology({ bedrockVisible, quaternaryVisible }) {
       geologyVisible = Boolean(bedrockVisible) || Boolean(quaternaryVisible);
       applyVisibility();

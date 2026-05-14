@@ -1,3 +1,4 @@
+/** @file AMN1 amenities parser and stateful amenity area/prop scene system. */
 import { readMagic } from '../core/binary.js';
 
 export const AMENITIES_CONTRACT = Object.freeze({
@@ -30,6 +31,14 @@ const _RED = [0.78, 0.22, 0.20];
 const _YEL = [0.92, 0.78, 0.20];
 const _BLU = [0.25, 0.42, 0.78];
 
+/**
+ * Parse the AMN1 amenities binary without depending on THREE.
+ * Layout is magic AMN1, uint32 area count, repeated area headers
+ * (uint16 tid, uint16 nv, float32 baseZ) followed by nv xyz float32 vertices,
+ * then uint32 point count and 16-byte point records (uint16 tid plus xyz).
+ * Returns a plain object with area objects containing typed positions/ring2d
+ * arrays and point objects for prop instancing.
+ */
 export function parseAmenitiesBuffer(buffer) {
   if (buffer.byteLength < 8) throw new Error('amenities.bin too small');
   const view = new DataView(buffer);
@@ -71,7 +80,15 @@ export function parseAmenitiesBuffer(buffer) {
   return { nAreas, areas, nPoints, points };
 }
 
+/**
+ * Create amenity prop geometry builders from shared THREE/mergeGeometries
+ * references and imported base builders. The returned builder array is pure
+ * geometry construction; meshes and materials are owned by createAmenitiesSystem.
+ */
 function createPropBuilders(THREE, mergeGeometries, baseBuilders) {
+  /**
+   * Build a colored box BufferGeometry primitive for local amenity props.
+   */
   function _propBox(w, l, h, ox, oy, oz, color){
     const g = new THREE.BoxGeometry(w, l, h);
     g.translate(ox, oy, oz + h * 0.5);
@@ -81,6 +98,9 @@ function createPropBuilders(THREE, mergeGeometries, baseBuilders) {
     g.setAttribute('color', new THREE.BufferAttribute(c, 3));
     return g;
   }
+  /**
+   * Build a colored Z-up cylinder BufferGeometry primitive for local props.
+   */
   function _propCyl(r, h, ox, oy, oz, color, radial=8){
     const g = new THREE.CylinderGeometry(r, r, h, radial);
     g.rotateX(Math.PI / 2);
@@ -91,6 +111,9 @@ function createPropBuilders(THREE, mergeGeometries, baseBuilders) {
     g.setAttribute('color', new THREE.BufferAttribute(c, 3));
     return g;
   }
+  /**
+   * Build a colored sphere BufferGeometry primitive for local prop builders.
+   */
   function _propSphere(r, ox, oy, oz, color){
     const g = new THREE.SphereGeometry(r, 8, 6);
     g.translate(ox, oy, oz);
@@ -100,6 +123,9 @@ function createPropBuilders(THREE, mergeGeometries, baseBuilders) {
     g.setAttribute('color', new THREE.BufferAttribute(c, 3));
     return g;
   }
+  /**
+   * Build the shelter prop geometry consumed by amenity point instancing.
+   */
   function buildShelterGeom(){
     return mergeGeometries([
       _propCyl(0.07, 2.2, -1.4, -0.9, 0, _DARK),
@@ -110,6 +136,9 @@ function createPropBuilders(THREE, mergeGeometries, baseBuilders) {
       _propBox(2.6, 0.30, 0.04, 0, -0.7, 0.42, _WOOD),
     ], false);
   }
+  /**
+   * Build the artwork prop geometry consumed by amenity point instancing.
+   */
   function buildArtworkGeom(){
     return mergeGeometries([
       _propBox(0.6, 0.6, 0.3, 0, 0, 0, _STONE),
@@ -117,12 +146,18 @@ function createPropBuilders(THREE, mergeGeometries, baseBuilders) {
       _propSphere(0.32, 0, 0, 2.5, _METAL),
     ], false);
   }
+  /**
+   * Build the memorial prop geometry consumed by amenity point instancing.
+   */
   function buildMemorialGeom(){
     return mergeGeometries([
       _propBox(1.0, 0.4, 0.15, 0, 0, 0, _STONE),
       _propBox(0.8, 0.18, 1.2, 0, 0, 0.15, _STONE),
     ], false);
   }
+  /**
+   * Build the swing-set prop geometry consumed by amenity point instancing.
+   */
   function buildSwingGeom(){
     return mergeGeometries([
       _propCyl(0.06, 2.5, -1.2, 0, 0, _METAL),
@@ -136,6 +171,9 @@ function createPropBuilders(THREE, mergeGeometries, baseBuilders) {
       _propBox(0.02, 0.02, 1.9,  0.6,  0.07, 0.5, _DARK),
     ], false);
   }
+  /**
+   * Build the slide prop geometry consumed by amenity point instancing.
+   */
   function buildSlideGeom(){
     return mergeGeometries([
       _propBox(1.2, 1.2, 1.6, 0, 0.6, 0, _WOOD),
@@ -144,12 +182,18 @@ function createPropBuilders(THREE, mergeGeometries, baseBuilders) {
       _propCyl(0.04, 1.6,  0.5, 1.0, 0, _DARK, 6),
     ], false);
   }
+  /**
+   * Build the roundabout prop geometry consumed by amenity point instancing.
+   */
   function buildRoundaboutGeom(){
     return mergeGeometries([
       _propCyl(1.4, 0.18, 0, 0, 0, _RED, 16),
       _propCyl(0.08, 0.6, 0, 0, 0.18, _METAL, 8),
     ], false);
   }
+  /**
+   * Build the climbing-frame prop geometry consumed by amenity point instancing.
+   */
   function buildClimbingFrameGeom(){
     const parts = [];
     for (const [x,y] of [[-1,-1],[1,-1],[-1,1],[1,1]]) parts.push(_propCyl(0.05, 2.0, x, y, 0, _METAL, 6));
@@ -161,6 +205,9 @@ function createPropBuilders(THREE, mergeGeometries, baseBuilders) {
     parts.push(_propBox(0.04, 2.0, 0.04, 0, 0, 1.0, _METAL));
     return mergeGeometries(parts, false);
   }
+  /**
+   * Build the sandpit prop geometry consumed by amenity point instancing.
+   */
   function buildSandpitGeom(){
     return mergeGeometries([
       _propBox(3.0, 3.0, 0.12, 0, 0, 0, _SAND),
@@ -170,6 +217,9 @@ function createPropBuilders(THREE, mergeGeometries, baseBuilders) {
       _propBox(0.10, 3.0, 0.18,  1.5, 0, 0, _WOOD),
     ], false);
   }
+  /**
+   * Build the seesaw prop geometry consumed by amenity point instancing.
+   */
   function buildSeesawGeom(){
     return mergeGeometries([
       _propCyl(0.10, 0.6, 0, 0, 0, _DARK, 8),
@@ -178,6 +228,9 @@ function createPropBuilders(THREE, mergeGeometries, baseBuilders) {
       _propBox(0.20, 0.20, 0.10,  1.0, 0, 0.68, _BLU),
     ], false);
   }
+  /**
+   * Build the spring-rider prop geometry consumed by amenity point instancing.
+   */
   function buildSpringyGeom(){
     return mergeGeometries([
       _propCyl(0.06, 0.4, 0, 0, 0, _METAL, 6),
@@ -185,6 +238,9 @@ function createPropBuilders(THREE, mergeGeometries, baseBuilders) {
       _propSphere(0.10, 0, -0.20, 0.85, _RED),
     ], false);
   }
+  /**
+   * Build the fallback playground prop geometry consumed by amenity instancing.
+   */
   function buildPgOtherGeom(){
     return mergeGeometries([
       _propBox(0.4, 0.4, 0.4, 0, 0, 0, _YEL),
@@ -210,18 +266,33 @@ function createPropBuilders(THREE, mergeGeometries, baseBuilders) {
   ];
 }
 
+/**
+ * Deterministic amenities hash for repeatable per-prop rotation and scale.
+ */
 function _amHash(x, y){
   let h = (Math.floor(x * 31.7) ^ Math.floor(y * 19.3)) >>> 0;
   h = ((h * 0x27d4eb2d) ^ (h >>> 15)) >>> 0;
   return (h & 0xffff) / 65535;
 }
 
+/**
+ * Create the stateful amenities renderer. THREE, amenitiesGroup, and both
+ * uniform objects are shared references; this factory owns propsGroup and the
+ * meshes it creates. Scene is accepted for API symmetry. Uniforms are mutated
+ * in place, load() is fire-and-forget, and visibility is combined with
+ * buildings elsewhere through the shared showBld toggle.
+ */
 export function createAmenitiesSystem({ THREE, scene, amenitiesGroup, amenityAreaUniforms, amenityPropUniforms }) {
   void scene;
   const propsGroup = THREE.Group ? new THREE.Group() : { add() {} };
   if (amenitiesGroup && amenitiesGroup.add) amenitiesGroup.add(propsGroup);
 
   return {
+    /**
+     * Fire-and-forget load() for amenities.bin: parses AMN1 areas/points,
+     * triangulates area polygons into meshes on amenitiesGroup, builds instanced
+     * prop meshes on propsGroup, and appends a HUD summary.
+     */
     async load() {
       let ab;
       try { ab = await (await fetch('amenities.bin')).arrayBuffer(); }
@@ -332,9 +403,17 @@ export function createAmenitiesSystem({ THREE, scene, amenitiesGroup, amenityAre
       document.getElementById('hud').insertAdjacentHTML('beforeend',
         `<br>amenities: ${nAreas.toLocaleString()} areas · ${totalProps.toLocaleString()} props`);
     },
+    /**
+     * Set amenitiesGroup visibility; the application pairs this with building
+     * visibility for the combined showBld invariant.
+     */
     setVisible(visible) {
       amenitiesGroup.visible = visible;
     },
+    /**
+     * Mutate shared area and prop exaggeration uniforms in place so amenities
+     * track terrain scale without replacing materials.
+     */
     setExaggeration(value) {
       amenityAreaUniforms.uExag.value = value;
       amenityPropUniforms.uExag.value = value;

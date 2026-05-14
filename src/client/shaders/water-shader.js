@@ -1,3 +1,11 @@
+/**
+ * @file Shader string templates for a water surface with depth-based color blend and sun-lit derivative normals.
+ */
+
+/**
+ * Vertex shader for the water plane that applies vertical exaggeration and passes world position plus depth fade.
+ * Expects uExag so water elevation remains consistent with the exaggerated terrain scene.
+ */
 export const vertexShader = String.raw`
     #include <common>
     #include <logdepthbuf_pars_vertex>
@@ -15,6 +23,10 @@ export const vertexShader = String.raw`
     }
   `;
 
+/**
+ * Fragment shader for water that blends deep and shallow colors by depth fade and lights the surface from derivative normals.
+ * Expects uSun and the vertex-provided vDepthFade to shade the surface without external texture state.
+ */
 export const fragmentShader = String.raw`
     #include <common>
     #include <logdepthbuf_pars_fragment>

@@ -1,3 +1,11 @@
+/**
+ * @file Persists and restores the viewer camera pose between sessions.
+ */
+
+/**
+ * Restores a validated camera position and controls target from localStorage so returning users resume the same view.
+ * The stored value must live under the caller-provided key and use the compact JSON shape {p,t}, where each field is a three-number array.
+ */
 export function restoreCamera({ camera, controls, storageKey }) {
   try {
     const raw = localStorage.getItem(storageKey);
@@ -14,6 +22,10 @@ export function restoreCamera({ camera, controls, storageKey }) {
   } catch (e) { return false; }
 }
 
+/**
+ * Saves the current camera position and controls target in localStorage so navigation state survives reloads.
+ * The persisted JSON intentionally stays compact as {p,t} to match restoreCamera's validation contract.
+ */
 export function saveCamera({ camera, controls, storageKey }) {
   try {
     localStorage.setItem(storageKey, JSON.stringify({

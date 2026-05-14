@@ -1,3 +1,11 @@
+/**
+ * @file Shader string templates for terrain height sampling, elevation coloring, geology overlays, contours, roads, and fog.
+ */
+
+/**
+ * Vertex shader for terrain tiles that decodes height texture samples into exaggerated world positions.
+ * Expects uHeight, uOriginXY, uTileSize, uExag, uUVScale, and uUVOffset uniforms to align tile geometry with raster data.
+ */
 export const vertexShader = String.raw`
 #include <common>
 #include <logdepthbuf_pars_vertex>
@@ -25,6 +33,10 @@ void main(){
 }
 `;
 
+/**
+ * Fragment shader for terrain color, slope lighting, snow/rock bands, geology rasters, contours, road overlays, and distance fog.
+ * Expects height, terrain, geology, contour, road-grid, sun, and fog uniforms supplied consistently across terrain materials.
+ */
 export const fragmentShader = String.raw`
 precision highp float;
 #include <common>

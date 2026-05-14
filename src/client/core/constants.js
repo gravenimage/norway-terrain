@@ -1,3 +1,7 @@
+/**
+ * @file Owns viewer-wide default constants used before metadata or UI controls provide runtime values. Keep these values side-effect free so modules can import them without bootstrapping the viewer.
+ */
+
 export const ELEV_MAX = 1800;
 export const CAMERA_STORAGE_KEY = 'norwayterrain.cam.v1';
 export const DEFAULT_EXAGGERATION = 1.4;

@@ -1,3 +1,7 @@
+/**
+ * @file Creates shader materials while preserving each renderer option required by the corresponding visual layer.
+ */
+
 import * as THREE from 'three';
 import { vertexShader as terrainVertexShader, fragmentShader as terrainFragmentShader } from '../shaders/terrain-shader.js';
 import { vertexShader as buildingVertexShader, fragmentShader as buildingFragmentShader } from '../shaders/building-shader.js';
@@ -16,6 +20,10 @@ import {
   propFragmentShader,
 } from '../shaders/amenity-shader.js';
 
+/**
+ * Creates the terrain material with derivative support and polygon offset so terrain shading, contours, and overlays remain stable.
+ * The factory preserves the required extensions and polygonOffset settings while binding caller-owned uniforms.
+ */
 export function createTerrainMaterial(uniforms) {
   return new THREE.ShaderMaterial({
     polygonOffset: true,
@@ -28,6 +36,10 @@ export function createTerrainMaterial(uniforms) {
   });
 }
 
+/**
+ * Creates the instanced building material used for wall and roof shading with fog fade.
+ * The transparent and depthWrite options are kept together so faded buildings still participate correctly in depth ordering.
+ */
 export function createBuildingMaterial(uniforms) {
   return new THREE.ShaderMaterial({
     uniforms,
@@ -38,6 +50,10 @@ export function createBuildingMaterial(uniforms) {
   });
 }
 
+/**
+ * Creates the amenity area material for semi-transparent ground overlays above terrain.
+ * The transparent, depthWrite, and polygonOffset values are preserved to prevent z-fighting while retaining correct depth composition.
+ */
 export function createAmenityAreaMaterial(uniforms) {
   return new THREE.ShaderMaterial({
     uniforms,
@@ -51,6 +67,10 @@ export function createAmenityAreaMaterial(uniforms) {
   });
 }
 
+/**
+ * Creates the amenity prop material for instanced vertical markers and objects.
+ * The transparent and depthWrite settings are intentional so distance fades do not break scene depth cues.
+ */
 export function createAmenityPropMaterial(uniforms) {
   return new THREE.ShaderMaterial({
     uniforms,
@@ -61,6 +81,10 @@ export function createAmenityPropMaterial(uniforms) {
   });
 }
 
+/**
+ * Creates the close-range tree mesh material for trunk and canopy geometry.
+ * It preserves transparent and depthWrite behavior because the shader fades trees by distance while still writing depth for solid silhouettes.
+ */
 export function createTreeMaterial(uniforms) {
   return new THREE.ShaderMaterial({
     uniforms,
@@ -71,6 +95,10 @@ export function createTreeMaterial(uniforms) {
   });
 }
 
+/**
+ * Creates the distant tree billboard material so impostors can face the camera from both sides.
+ * The transparent, depthWrite, and DoubleSide options are preserved for alpha-masked conical silhouettes.
+ */
 export function createTreeBillboardMaterial(uniforms) {
   return new THREE.ShaderMaterial({
     uniforms,
@@ -82,6 +110,10 @@ export function createTreeBillboardMaterial(uniforms) {
   });
 }
 
+/**
+ * Creates the forest canopy material for polygonal canopy surfaces with procedural variation.
+ * The transparent, depthWrite, DoubleSide, and derivatives extension options are required for fade, two-sided coverage, and normal reconstruction.
+ */
 export function createCanopyMaterial(uniforms) {
   return new THREE.ShaderMaterial({
     uniforms,
@@ -94,6 +126,10 @@ export function createCanopyMaterial(uniforms) {
   });
 }
 
+/**
+ * Creates the water material with front-side rendering, derivative normals, and terrain-safe polygon offset.
+ * Preserving side, extensions, and polygonOffset settings keeps the water plane visually stable under terrain overlays.
+ */
 export function createWaterMaterial(uniforms) {
   return new THREE.ShaderMaterial({
     uniforms,

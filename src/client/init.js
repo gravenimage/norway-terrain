@@ -1,3 +1,7 @@
+/**
+ * @file Owns viewer bootstrapping: metadata loading, scene construction, system wiring, UI attachment, and render-loop startup. Shared uniforms and system references are intentionally passed by reference so controls can mutate live rendering state.
+ */
+
 import {
   CAMERA_STORAGE_KEY,
   DEFAULT_BUILDING_RANGE_KM,
@@ -36,6 +40,9 @@ import { createRoadSystem } from './overlays/roads.js';
 import { attachControls } from './ui/controls.js';
 
 
+/**
+ * Initializes the complete client viewer from externally supplied Three.js dependencies. It owns startup order, fetches dataset metadata before constructing systems, and starts long-lived fire-and-forget loaders/rendering without returning an application object.
+ */
 export async function initializeViewer({ THREE, MapControls }) {
   const meta = await (await fetch('tiles/meta.json')).json();
   const world = createWorldTransform(meta);
@@ -69,9 +76,15 @@ export async function initializeViewer({ THREE, MapControls }) {
   restoreCamera({ camera, controls, storageKey: CAM_STORAGE_KEY });
   
   let _camSaveTimer = 0;
+  /**
+   * Persists the current camera and target using the legacy storage shape shared with camera-persistence tests.
+   */
   function _saveCameraNow(){
     saveCamera({ camera, controls, storageKey: CAM_STORAGE_KEY });
   }
+  /**
+   * Throttles camera saves during interaction while preserving a final beforeunload save path.
+   */
   controls.addEventListener('change', () => {
     if (_camSaveTimer) return;
     _camSaveTimer = setTimeout(() => { _camSaveTimer = 0; _saveCameraNow(); }, 250);
@@ -246,6 +259,9 @@ export async function initializeViewer({ THREE, MapControls }) {
     uRoadReady:     { value: 0.0 },
   };
   
+  /**
+   * Creates one terrain material with per-tile uniforms plus shared overlay uniforms by reference. Overlay uniforms are mutated in place elsewhere so every material observes the same geology, contour, and road state.
+   */
   function makeMaterial(){
     return createTerrainMaterial({
         uHeight:   { value: null },
@@ -317,7 +333,15 @@ export async function initializeViewer({ THREE, MapControls }) {
   geologySystem.loadQuaternary();
   // ---------------- end geology raster overlay -----------------
   
-  const faultSystem = createFaultSystem({ THREE, scene, faultsGroup, getExaggeration: () => EXAG });
+  const faultSystem = createFaultSystem({
+    THREE,
+    scene,
+    faultsGroup,
+    /**
+     * Supplies the live exaggeration value so fault geometry follows UI changes without rebuilding the system.
+     */
+    getExaggeration: () => EXAG,
+  });
   faultSystem.load();
   // ---------------- end faults layer -----------------
   
@@ -334,6 +358,9 @@ export async function initializeViewer({ THREE, MapControls }) {
   idClose.style.cssText = 'position:absolute;top:1px;right:3px;width:14px;height:14px;padding:0;line-height:12px;font-size:14px;background:transparent;color:#aaa;border:none;cursor:pointer;font-family:system-ui';
   idClose.addEventListener('mouseenter', () => { idClose.style.color = '#fff'; });
   idClose.addEventListener('mouseleave', () => { idClose.style.color = '#aaa'; });
+  /**
+   * Lets users dismiss identify results without triggering map interaction underneath the floating panel.
+   */
   idClose.addEventListener('click', (e) => {
     e.stopPropagation();
     idPanel.style.display = 'none';
@@ -345,8 +372,14 @@ export async function initializeViewer({ THREE, MapControls }) {
   idPanel.appendChild(idContent);
   
   let _idHideTimer = null;
+  /**
+   * Displays geology identify results next to the pointer and owns the panel's auto-hide lifecycle. It hides immediately when no raster layer reports data so stale identify content is never shown.
+   */
   function showIdPanel(x, y, info) {
     if (!info.bedrock && !info.quat) { idPanel.style.display = 'none'; return; }
+    /**
+     * Produces inline colour chips that match geology palette entries in the identify panel.
+     */
     const swatch = (hex) => `<span style="display:inline-block;width:10px;height:10px;background:${hex};border:1px solid #888;margin-right:4px;vertical-align:middle"></span>`;
     let html = '';
     if (info.bedrock) html += `<div>${swatch(info.bedrock.color)}<b>Bedrock:</b> ${info.bedrock.name} <span style="opacity:0.6">(${info.bedrock.scale})</span></div>`;
@@ -374,7 +407,13 @@ export async function initializeViewer({ THREE, MapControls }) {
     frustum: culler.frustum,
     getTile: tileCache.getTile,
     meshPool: terrainMeshPool,
+    /**
+     * Supplies the current height exaggeration during tile evaluation instead of capturing the startup value.
+     */
     getExag: () => EXAG,
+    /**
+     * Supplies the current screen-space-error threshold so LOD decisions reflect the latest UI setting.
+     */
     getSsePx: () => SSE_PX,
     initialSeg: SEG,
     initialPlane,
@@ -417,11 +456,29 @@ export async function initializeViewer({ THREE, MapControls }) {
     },
     rebuildPlane: terrainLod.rebuildPlane,
     stateAccessors: {
+      /**
+       * Mirrors UI exaggeration into the render-loop closure so tile evaluation and overlays stay in sync.
+       */
       setExag(value) { EXAG = value; },
+      /**
+       * Mirrors the terrain LOD screen-space-error threshold into the render-loop closure.
+       */
       setSsePx(value) { SSE_PX = value; },
+      /**
+       * Mirrors the building visibility range used by the per-frame building updater.
+       */
       setBuildingRange(value) { BLD_RANGE = value; },
+      /**
+       * Mirrors the canopy far range used by forest culling and fade uniforms.
+       */
       setCanopyRange(value) { CANOPY_RANGE = value; },
+      /**
+       * Mirrors the lower and upper canopy LOD transition bounds as a pair to preserve the fade band invariant.
+       */
       setCanopyLod(lo, hi) { CANOPY_LOD_LO = lo; CANOPY_LOD_HI = hi; },
+      /**
+       * Reports the terrain renderer's current segment count after any geometry rebuild.
+       */
       getSegments() { return terrainLod.getSegments(); },
     },
   });
@@ -431,6 +488,9 @@ export async function initializeViewer({ THREE, MapControls }) {
   startRenderLoop({
     controls, camera, culler, terrain: terrainLod,
     systems: { buildings: buildingSystem, forest: forestSystem },
+    /**
+     * Supplies the live building range to the render loop so per-frame culling honours UI changes.
+     */
     getBldRange: () => BLD_RANGE,
     tileCache, renderer, scene, compass,
   });

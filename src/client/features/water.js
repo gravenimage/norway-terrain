@@ -1,3 +1,4 @@
+/** @file WATR water parser and stateful water scene system. */
 import { assertMagic } from '../core/binary.js';
 
 export const WATER_CONTRACT = Object.freeze({
@@ -6,6 +7,14 @@ export const WATER_CONTRACT = Object.freeze({
   indexType: 'uint16',
 });
 
+/**
+ * Parse the WATR water mesh binary without depending on THREE.
+ * Layout is magic WATR, uint32 version, uint32 cell count, then per cell:
+ * int32 kx/ky, float32 center/min/max/radius, uint32 vertex/triangle counts,
+ * tightly packed float32 xyz vertices and uint16 triangle indices with optional
+ * uint16 padding. Returns a plain object with version, nCells, totalTris, and
+ * cells whose verts/indices are sliced typed arrays.
+ */
 export function parseWaterBuffer(buffer) {
   const view = new DataView(buffer);
   assertMagic(view, WATER_CONTRACT.magic);
@@ -35,12 +44,23 @@ export function parseWaterBuffer(buffer) {
   return { version, nCells, cells, totalTris };
 }
 
+/**
+ * Create the stateful water renderer. THREE, scene, waterUniforms, and
+ * waterMaterial are shared references; this factory owns the waterGroup added
+ * to the scene plus the parsed water cell registry. Uniforms are mutated in
+ * place, and callers normally invoke load() fire-and-forget.
+ */
 export function createWaterSystem({ THREE, scene, waterUniforms, waterMaterial }) {
   const waterGroup = THREE.Group ? new THREE.Group() : { add() {} };
   const waterCells = [];
   if (scene && scene.add) scene.add(waterGroup);
 
   return {
+    /**
+     * Fire-and-forget load() for water.bin: fetches WATR cells, creates one
+     * THREE.BufferGeometry mesh per cell, adds meshes to the owned group, and
+     * appends a HUD summary without returning scene objects.
+     */
     async load() {
       try {
         const ab = await (await fetch('water.bin')).arrayBuffer();
@@ -61,6 +81,10 @@ export function createWaterSystem({ THREE, scene, waterUniforms, waterMaterial }
         console.warn('water.bin not loaded:', e);
       }
     },
+    /**
+     * Mutate the shared water uniform in place so all water meshes follow the
+     * current terrain exaggeration.
+     */
     setExaggeration(value) {
       waterUniforms.uExag.value = value;
     },

@@ -1,3 +1,11 @@
+/**
+ * @file Builds and renders the orientation compass overlay for the viewer.
+ */
+
+/**
+ * Creates a small independent compass scene that mirrors the shared main camera orientation.
+ * The renderer and camera are borrowed references, so the compass restores renderer state after drawing its overlay viewport.
+ */
 export function createCompass({ THREE, renderer, camera }) {
   const compassScene = new THREE.Scene();
   const compassCam = new THREE.PerspectiveCamera(35, 1, 0.1, 100);
@@ -87,6 +95,10 @@ export function createCompass({ THREE, renderer, camera }) {
   const COMPASS_DIST = 3.4;
   const _compassFwd = new THREE.Vector3();
 
+  /**
+   * Renders the compass after the main scene so it appears as an overlay without clearing the frame.
+   * It copies the shared camera orientation each frame and restores viewport, scissor, and autoClear state for the rest of the viewer.
+   */
   function render() {
     // Mirror main camera orientation around the arrow's origin so visual north matches.
     _compassFwd.set(0, 0, -1).applyQuaternion(camera.quaternion);

@@ -1,3 +1,4 @@
+/** @file Parses and renders fault-line overlays from FLT1 binary segment data. */
 import { readMagic } from '../core/binary.js';
 
 export const FAULT_CONTRACT = Object.freeze({
@@ -8,6 +9,11 @@ export const FAULT_CONTRACT = Object.freeze({
 
 const DEFAULT_FAULT_EXAGGERATION = 1.4;
 
+/**
+ * Parse an FLT1 faults binary with no THREE dependency.
+ * Returns `{ magic, nGroups, groups, totalSegs }`, where each group contains
+ * `{ typeIdx, nVerts, verts }` and `verts` is a Float32Array of xyz line vertices.
+ */
 export function parseFaultsBuffer(buffer) {
   const view = new DataView(buffer);
   const magic = readMagic(view, 0, 4);
@@ -27,6 +33,12 @@ export function parseFaultsBuffer(buffer) {
   return { magic, nGroups, groups, totalSegs };
 }
 
+/**
+ * Create the stateful faults overlay system.
+ * `THREE` is a shared renderer dependency, `scene` is accepted for factory parity,
+ * `faultsGroup` is the owned display group mutated by load/visibility methods, and
+ * `getExaggeration` reads the current shared vertical scale when geometry is built.
+ */
 export function createFaultSystem({ THREE, scene, faultsGroup, getExaggeration = () => DEFAULT_FAULT_EXAGGERATION }) {
   void scene;
   const faultMat = THREE.LineBasicMaterial
@@ -34,6 +46,10 @@ export function createFaultSystem({ THREE, scene, faultsGroup, getExaggeration =
     : null;
 
   return {
+    /**
+     * Fetch `faults.bin`, validate its FLT1 payload, and populate `faultsGroup`
+     * with exaggerated THREE.LineSegments owned by this system.
+     */
     async load() {
       let buf;
       try {
@@ -68,6 +84,7 @@ export function createFaultSystem({ THREE, scene, faultsGroup, getExaggeration =
       }
       console.log(`faults: ${parsed.totalSegs} segments`);
     },
+    /** Toggle the owned faults group without changing parsed geometry. */
     setVisible(visible) {
       faultsGroup.visible = visible;
     },

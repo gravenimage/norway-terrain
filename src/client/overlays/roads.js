@@ -1,3 +1,4 @@
+/** @file Parses OSM2 road/town overlays and builds road GPU lookup textures. */
 import { assertMagic, concatFloat32 } from '../core/binary.js';
 
 const TOWN_COLOR = '#7be0c8';
@@ -32,6 +33,7 @@ export const ROAD_CONTRACT = Object.freeze({
   classes: '0..4 roads, 5 kommune boundaries',
 });
 
+/** Compute fallback world bounds from parsed road segment endpoints. */
 function boundsFromSegments(segsByClass) {
   let xMin = Infinity;
   let yMin = Infinity;
@@ -51,6 +53,12 @@ function boundsFromSegments(segsByClass) {
   return { xMin, yMin, xMax, yMax };
 }
 
+/**
+ * Parse an OSM2 road/town binary with no THREE dependency.
+ * Returns `{ nGroups, centerX, centerY, segsByClass, townGroups, totalSegs,
+ * townSegs }`; `segsByClass[0..4]` are Float32Array road segment endpoints
+ * `[ax, ay, bx, by]`, and `townGroups` keeps kommune boundary xyz vertices.
+ */
 export function parseRoadsBuffer(buffer) {
   const view = new DataView(buffer);
   assertMagic(view, ROAD_CONTRACT.magic);
@@ -90,6 +98,13 @@ export function parseRoadsBuffer(buffer) {
   return { nGroups, centerX, centerY, segsByClass, townGroups, totalSegs, townSegs };
 }
 
+/**
+ * Create the stateful roads and towns overlay system.
+ * `THREE` and `scene` are shared renderer refs; `roadUniforms` are shared terrain
+ * shader uniforms for road lookup/show state, while `overlayUniforms` are shared
+ * line-overlay uniforms for town color lines (`uExag` and `uOffset`). `roadsGroup`
+ * and `townsGroup` are owned display groups mutated by returned methods.
+ */
 export function createRoadSystem({
   THREE,
   scene,
@@ -103,6 +118,7 @@ export function createRoadSystem({
 }) {
   void scene;
 
+  /** Build a town/boundary line material using shared overlay uniforms plus color. */
   function makeLineMaterial(color) {
     return new THREE.ShaderMaterial({
       uniforms: { ...overlayUniforms, uColor: { value: new THREE.Color(color) } },
@@ -114,6 +130,10 @@ export function createRoadSystem({
     });
   }
 
+  /**
+   * Convert parsed road segments into grid/reference/class DataTextures and assign
+   * them to shared `roadUniforms` for terrain-shader road draping.
+   */
   function buildRoadOverlay(segsByClass) {
     const fallbackBounds = boundsFromSegments(segsByClass);
     const xMinC = src ? src.xMin - centerX : fallbackBounds.xMin;
@@ -247,6 +267,10 @@ export function createRoadSystem({
   }
 
   return {
+    /**
+     * Fetch `osm.bin`, parse OSM2 roads/towns, populate `townsGroup`, and update
+     * `roadUniforms` textures used by the terrain shader.
+     */
     async load() {
       try {
         const ab = await (await fetch('osm.bin')).arrayBuffer();
@@ -267,16 +291,20 @@ export function createRoadSystem({
         console.warn('osm.bin not loaded:', e);
       }
     },
+    /** Toggle road draping through `roadUniforms.uRoadShow` and the optional roads group. */
     setRoadsVisible(visible) {
       roadUniforms.uRoadShow.value = visible ? 1.0 : 0.0;
       if (roadsGroup) roadsGroup.visible = visible;
     },
+    /** Toggle kommune/town boundary line visibility on the owned towns group. */
     setTownsVisible(visible) {
       townsGroup.visible = visible;
     },
+    /** Set `overlayUniforms.uExag` for town/boundary line vertical exaggeration. */
     setExaggeration(value) {
       overlayUniforms.uExag.value = value;
     },
+    /** Set `overlayUniforms.uOffset` for town/boundary line drape offset. */
     setDrapeOffset(value) {
       overlayUniforms.uOffset.value = value;
     },

@@ -1,8 +1,20 @@
+/**
+ * @file Coordinates the viewer frame loop without taking ownership of shared scene, camera, renderer, or system references.
+ */
+
 import { updateFps, updateHud } from '../ui/hud.js';
 
+/**
+ * Starts the perpetual render loop that advances controls, visibility, cache maintenance, and presentation in a stable order.
+ * The loop only orchestrates shared controls, camera, renderer, scene, terrain, systems, cache, and compass references; their lifetimes remain owned by the caller.
+ */
 export function startRenderLoop({ controls, camera, culler, terrain, systems, getBldRange, tileCache, renderer, scene, compass }) {
   let last = performance.now(), frames = 0;
 
+  /**
+   * Executes one animation frame in the required pipeline order: controls, recycle, camera matrix, frustum, terrain, buildings/forest cull, cache evict, render, compass, then HUD.
+   * Keeping this sequence explicit prevents culling or overlays from using stale camera state.
+   */
   function loop() {
     requestAnimationFrame(loop);
     controls.update();

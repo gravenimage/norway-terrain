@@ -1,3 +1,11 @@
+/**
+ * @file Shader string templates for instanced buildings with separate wall and roof colors plus distance fade.
+ */
+
+/**
+ * Vertex shader for instanced buildings that sizes, rotates, and places wall and roof geometry in world space.
+ * Expects aPart, iPos, iSize, iRot, iWallColor, iRoofColor, iRoofH attributes plus uExag and uExtraLift uniforms.
+ */
 export const vertexShader = String.raw`
 #include <common>
 #include <logdepthbuf_pars_vertex>
@@ -38,6 +46,10 @@ void main(){
   #include <logdepthbuf_vertex>
 }`;
 
+/**
+ * Fragment shader for buildings that applies sun lighting, vertical normal bias, fog, and distance alpha fade.
+ * Expects uSun, uFogColor, uFogNear/uFogFar, and uFadeNear/uFadeFar uniforms from the building material.
+ */
 export const fragmentShader = String.raw`
 precision highp float;
 #include <common>

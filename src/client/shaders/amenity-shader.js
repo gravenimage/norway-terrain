@@ -1,3 +1,11 @@
+/**
+ * @file Shader string templates for colored amenity areas and props with toon lighting, fog, and distance fade.
+ */
+
+/**
+ * Vertex shader for amenity area surfaces that lifts colored polygons just above terrain.
+ * Expects aColor attributes plus uExag and uExtraLift uniforms, and passes world position and normals to the fragment stage.
+ */
 export const areaVertexShader = String.raw`
     #include <common>
     #include <logdepthbuf_pars_vertex>
@@ -17,6 +25,10 @@ export const areaVertexShader = String.raw`
       #include <logdepthbuf_vertex>
     }`;
 
+/**
+ * Fragment shader for amenity area surfaces with sun wrapping, fog blend, and distance alpha fade.
+ * Expects uSun, uFogColor, uFogNear/uFogFar, and uFadeNear/uFadeFar uniforms from the material owner.
+ */
 export const areaFragmentShader = String.raw`
     precision highp float;
     #include <common>
@@ -42,6 +54,10 @@ export const areaFragmentShader = String.raw`
       gl_FragColor = vec4(col, alpha);
     }`;
 
+/**
+ * Vertex shader for instanced amenity props that scales, rotates, and places each prop in terrain-relative world space.
+ * Expects color, iPos, iRot, iScale attributes and uExag so props remain anchored to exaggerated terrain.
+ */
 export const propVertexShader = String.raw`
     #include <common>
     #include <logdepthbuf_pars_vertex>
@@ -70,6 +86,10 @@ export const propVertexShader = String.raw`
       #include <logdepthbuf_vertex>
     }`;
 
+/**
+ * Fragment shader for amenity props using banded toon lighting, fog, and distance fade.
+ * Expects uSun, uFogColor, uFogNear/uFogFar, and uFadeNear/uFadeFar uniforms shared with other faded feature materials.
+ */
 export const propFragmentShader = String.raw`
     precision highp float;
     #include <common>
