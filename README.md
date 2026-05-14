@@ -92,7 +92,9 @@ at that point.
 | `buildings.bin` | OSM building footprints + heights (BLD1 binary). |
 | `osm.bin` | Major roads + kommune boundaries (OSM2 binary). |
 | `water.bin` | Inland water-body mesh (WATR binary). |
-| `e39.bin` | E39 highway centreline between Mekjarvik and Egersund for the road-trip camera (E391 binary). |
+| `e39.bin` | E39 highway centreline (Mekjarvik – Egersund) for the road-trip camera (E391 binary). |
+| `byrkjedal.bin` | Fv450 / Hunnedalsvegen centreline (Ålgård – Byrkjedalstunet) — second road-trip route (same E391 binary format). |
+| `trips.json` | Manifest of available road-trip routes (id, title, file, endpoint labels, length). The road-trip UI loads this first, then the active trip's `.bin`. |
 | `features.json` | Named towns / peaks / hills / lakes for the place-label sprites. |
 | `bedrock_raster.bin` + `bedrock_palette.json` | NGU bedrock raster overlay + palette (BRR1 binary, 50 m px). |
 | `quaternary_raster.bin` + `quaternary_palette.json` | NGU Quaternary deposits raster overlay + palette (QRR1 binary, 50 m px). |
@@ -112,8 +114,11 @@ want to rebuild from raw sources, the scripts in this folder do that:
 - `forest_polys.py` — builds canopy mesh + per-tree records from ESA
   WorldCover class 10.
 - `water_polys.py` — builds the inland-water mesh from WorldCover class 80.
-- `extract_e39.py` — pulls the E39 highway centreline from Overpass and
-  builds `e39.bin` for the road-trip camera.
+- `extract_route.py` — pulls one or more highway centrelines from Overpass
+  (E39, Fv450, …) and builds the per-route `<id>.bin` plus the `trips.json`
+  manifest used by the road-trip camera. Routes are configured in a single
+  `ROUTES` dict near the top of the file — add a new entry there and run
+  `python extract_route.py <id>` (or `all`) to produce a new trip.
 - `extract_named_features.py` — pulls named towns, peaks, hills, and lakes
   from Overpass over the Rogaland DEM bbox and writes `features.json` for
   the place-label sprites. Caches the raw Overpass response in

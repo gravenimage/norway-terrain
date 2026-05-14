@@ -1,0 +1,18 @@
+[
+  {
+    "id": "e39",
+    "title": "E39 · Mekjarvik – Egersund",
+    "file": "e39.bin",
+    "fromLabel": "Mekjarvik",
+    "toLabel": "Egersund",
+    "lengthKm": 73.7
+  },
+  {
+    "id": "byrkjedal",
+    "title": "Fv450 · Ålgård – Byrkjedalstunet",
+    "file": "byrkjedal.bin",
+    "fromLabel": "Ålgård",
+    "toLabel": "Byrkjedalstunet",
+    "lengthKm": 31.6
+  }
+]

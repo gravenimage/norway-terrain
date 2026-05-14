@@ -324,12 +324,25 @@ The viewer is a single full-window WebGL canvas with two HUD overlays.
 
 ### 5.9 Road-trip camera
 
-A rail-guided camera mode follows the E39 highway centreline between
-Mekjarvik (north of Stavanger) and Egersund. Source data is
-`e39.bin` (E391 binary, produced by `extract_e39.py` from OSM
-`ref="E39"` ways, densified to ~25 m and height-sampled against the
-10 m DEM). The bottom-right panel exposes:
+A rail-guided camera mode follows highway centrelines between two named
+endpoints. Multiple routes ship with the build (currently E39 Mekjarvik–
+Egersund and Fv450/Hunnedalsvegen Ålgård–Byrkjedalstunet); the panel's
+dropdown switches between them and the active choice persists in
+`localStorage` under key `roadtrip-trip`.
 
+Each route is an E391 binary (`<id>.bin`) produced by `extract_route.py`,
+which queries OSM by `ref` over a configured bounding box, projects to
+EPSG:25833, stitches the matching ways into a single connected polyline,
+densifies to ~25 m and samples heights from the 10 m DEM. A small
+`trips.json` manifest lists every available route (id, title, file,
+endpoint labels, length); the client loads the manifest first, then the
+active trip's `.bin`. Binary layout is independent of the route — only the
+*semantic* meaning of the two endpoint indices changes per-trip — so a
+route can be relabelled by editing `trips.json` alone.
+
+The bottom-right panel exposes:
+
+- Trip selector (dropdown above the endpoint row).
 - Teleport to either endpoint.
 - Drive (constant 70 km/h by default; speed slider 10–200 km/h).
 - Height slider (default 75 m above road; range 10–500 m).

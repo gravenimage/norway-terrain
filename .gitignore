@@ -21,3 +21,7 @@ node_modules/
 
 test-results/
 playwright-report/
+
+# Overpass response caches (regenerate via extract_route.py / extract_named_features.py).
+*_raw.json
+.smoke/

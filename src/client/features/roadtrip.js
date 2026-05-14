@@ -1,41 +1,54 @@
 /**
- * @file Road-trip mode: rail-guided camera that drives along the pre-extracted E39 polyline
- * between Mekjarvik and Egersund at constant speed and configurable height. Loads `e39.bin`
- * (produced by `extract_e39.py`), exposes teleport/start/stop/setHeight/setSpeed/update API,
- * and overrides MapControls while active.
+ * @file Road-trip mode: rail-guided camera that drives along a pre-extracted polyline at
+ * constant speed and configurable height. Supports multiple routes via `trips.json`
+ * (built by `extract_route.py`); each route is its own `<id>.bin` with the same layout.
+ *
+ * Public entry points:
+ *   parseRouteBuffer(ab)  - pure parser, returns header + Float32 view (testable in node)
+ *   createRoadTripSystem  - factory that owns route state and camera-override behaviour
  *
  * Coordinate notes:
- *   - Scene is Z-up. Road points stored as (x_rel, y_rel, z_raw, cumDist) in metres where
- *     x_rel/y_rel are EPSG:25833 minus the world centre. z_raw is the *raw* DEM elevation;
- *     the terrain shader multiplies by uExag, so this system multiplies z by the current
- *     exaggeration to keep the camera flush with the visible road surface.
+ *   - Scene is Z-up. Route points are stored as (x_rel, y_rel, z_raw, cumDist) in metres,
+ *     where x_rel/y_rel are EPSG:25833 minus the world centre. z_raw is the *raw* DEM
+ *     elevation; the terrain shader multiplies by uExag, so this system multiplies z by the
+ *     current exaggeration to keep the camera flush with the visible road surface.
  *   - Drag-look adds yaw/pitch offsets relative to the road tangent; both decay smoothly on
  *     pointer release. Pitch is clamped to avoid flipping the camera.
+ *   - Endpoints are positional: "from" = idxFrom (vertex 0 by convention) and "to" = idxTo
+ *     (last vertex). Display labels are looked up in the manifest, not the binary, so a route
+ *     can be relabelled without rebuilding the .bin.
  */
 
 const MAGIC = 'E391';
+const TRIPS_MANIFEST_URL = 'trips.json';
+const TRIP_STORAGE_KEY = 'roadtrip-trip';
 
 /**
- * Decode the binary `e39.bin` produced by `extract_e39.py`.
- * Returns the route header plus a Float32Array view over [x, y, z, cumDist] per vertex.
+ * Decode a route binary produced by `extract_route.py`. Same layout as the historical
+ * `e39.bin`; the two endpoint indices are exposed as `idxFrom` / `idxTo`. Kept exported
+ * (and pure) so it can be unit-tested without spinning up the whole system.
  */
-export function parseE39Buffer(ab) {
+export function parseRouteBuffer(ab) {
   const view = new DataView(ab);
   const magic = String.fromCharCode(view.getUint8(0), view.getUint8(1), view.getUint8(2), view.getUint8(3));
-  if (magic !== MAGIC) throw new Error(`e39.bin: bad magic ${JSON.stringify(magic)}`);
+  if (magic !== MAGIC) throw new Error(`route bin: bad magic ${JSON.stringify(magic)}`);
   let off = 4;
   const nPts = view.getUint32(off, true); off += 4;
-  const idxMekjarvik = view.getUint32(off, true); off += 4;
-  const idxEgersund = view.getUint32(off, true); off += 4;
+  const idxFrom = view.getUint32(off, true); off += 4;
+  const idxTo = view.getUint32(off, true); off += 4;
   const centerX = view.getFloat64(off, true); off += 8;
   const centerY = view.getFloat64(off, true); off += 8;
   const floats = new Float32Array(ab, off, nPts * 4);
-  return { nPts, idxMekjarvik, idxEgersund, centerX, centerY, floats };
+  return { nPts, idxFrom, idxTo, centerX, centerY, floats };
 }
 
+// Back-compat re-export so callers that imported the old name keep working. Both names
+// point at the exact same parser; the binary format is unchanged.
+export const parseE39Buffer = parseRouteBuffer;
+
 /**
- * Locate the route vertex index whose cumulative distance is just below `s` (metres). The route
- * is monotonic in cumDist by construction so a binary search is correct and cheap.
+ * Locate the route vertex index whose cumulative distance is just below `s` (metres). The
+ * route is monotonic in cumDist by construction so a binary search is correct and cheap.
  */
 function findSegment(floats, nPts, s) {
   let lo = 0, hi = nPts - 1;
@@ -65,7 +78,6 @@ function sampleRoute(floats, nPts, s) {
   const y = floats[i * 4 + 1] * (1 - t) + floats[j * 4 + 1] * t;
   const z = floats[i * 4 + 2] * (1 - t) + floats[j * 4 + 2] * t;
 
-  // smoothed tangent via lookahead window
   const LOOKAHEAD = 60; // metres
   const sBack = Math.max(0, s - LOOKAHEAD);
   const sFwd = Math.min(totalLen, s + LOOKAHEAD);
@@ -80,8 +92,17 @@ function sampleRoute(floats, nPts, s) {
 }
 
 /**
- * Construct the road-trip system. Owns route state and the active camera-override behaviour, but
- * borrows camera/controls/canvas references — it does not create or dispose them.
+ * Construct the road-trip system. Owns route state and the active camera-override behaviour,
+ * but borrows camera/controls/canvas references — it does not create or dispose them.
+ *
+ * Multi-trip lifecycle:
+ *   1. load()         - fetches trips.json, then loads the persisted-or-first trip's .bin.
+ *   2. setTrip(id)    - swaps to a different trip from the same manifest. Auto-stops driving.
+ *   3. getTrips()     - returns the manifest entries (id, title, file, fromLabel, toLabel,
+ *                       lengthKm) so the UI can build a dropdown.
+ *
+ * Endpoint references throughout the API are positional ("from" / "to"), not name-based —
+ * the manifest carries the human-readable labels so the system itself stays route-agnostic.
  */
 export function createRoadTripSystem({
   THREE,
@@ -92,10 +113,12 @@ export function createRoadTripSystem({
   initialHeight = 75,
   initialSpeedKmh = 70,
 } = {}) {
-  let route = null; // { floats, nPts, idxMekjarvik, idxEgersund, totalLen }
-  let mode = 'idle'; // 'idle' | 'driving'
-  let progress = 0; // metres along route
-  let direction = 1; // +1 = toward egersund (increasing s), -1 = toward mekjarvik
+  let trips = null;            // array of manifest entries, or null until load() resolves
+  let currentTripId = null;    // id of the active trip, or null while unloaded
+  let route = null;            // { floats, nPts, idxFrom, idxTo, totalLen } for currentTripId
+  let mode = 'idle';
+  let progress = 0;
+  let direction = 1;           // +1 = toward "to" (s increasing), -1 = toward "from"
   let height = initialHeight;
   let speedKmh = initialSpeedKmh;
   let dragYaw = 0;
@@ -105,28 +128,28 @@ export function createRoadTripSystem({
   let dragging = false;
   let lastPx = 0, lastPy = 0;
   let controlsTargetRestore = null;
-  // smoothedHeadingYaw lags the raw road tangent so the camera doesn't snap around roundabouts
-  // and OSM vertex kinks. null means "uninitialised" — first applyCamera snaps to the target so
-  // teleports don't sweep through the world.
   let smoothedHeadingYaw = null;
-  const PITCH_MIN = -1.2; // ~-69° (look up steeply, but not flip)
-  const PITCH_MAX = 0.6;  // ~+34° (look down at the road)
-  const YAW_DECAY = 4.0;  // 1/s, exponential decay toward zero on release
+  const PITCH_MIN = -1.2;
+  const PITCH_MAX = 0.6;
+  const YAW_DECAY = 4.0;
   const PITCH_DECAY = 4.0;
-  // Heading-smoothing time constant: at ~70km/h this gives roughly 250m of "settling distance"
-  // before the camera is aimed at a new straight section, so roundabouts/turns are felt as a
-  // gentle sweep rather than a jerk. Larger = lazier camera.
-  const HEADING_TIME_CONSTANT = 4.0; // seconds
+  const HEADING_TIME_CONSTANT = 4.0;
   const onStateChange = new Set();
 
   function notify() {
-    for (const fn of onStateChange) fn(getState());
+    const st = getState();
+    for (const fn of onStateChange) fn(st);
   }
 
-  /**
-   * Returns a snapshot of the driver state for UI binding. Cheap; copies primitives only.
-   */
+  /** Look up the currently-selected trip's manifest entry, or null if none is loaded. */
+  function getCurrentTrip() {
+    if (!trips || !currentTripId) return null;
+    return trips.find((t) => t.id === currentTripId) || null;
+  }
+
+  /** Public state snapshot. Always safe to call; returns sensible defaults pre-load. */
   function getState() {
+    const trip = getCurrentTrip();
     return {
       loaded: route !== null,
       mode,
@@ -135,8 +158,12 @@ export function createRoadTripSystem({
       height,
       speedKmh,
       direction,
-      atMekjarvik: route ? Math.abs(progress - route.floats[route.idxMekjarvik * 4 + 3]) < 5 : false,
-      atEgersund: route ? Math.abs(progress - route.floats[route.idxEgersund * 4 + 3]) < 5 : false,
+      currentTripId,
+      fromLabel: trip ? trip.fromLabel : '',
+      toLabel: trip ? trip.toLabel : '',
+      // Convenience booleans so the panel doesn't replicate the float comparison logic.
+      atFrom: route ? Math.abs(progress - route.floats[route.idxFrom * 4 + 3]) < 5 : false,
+      atTo:   route ? Math.abs(progress - route.floats[route.idxTo   * 4 + 3]) < 5 : false,
     };
   }
 
@@ -156,7 +183,6 @@ export function createRoadTripSystem({
     const dy = ev.clientY - lastPy;
     lastPx = ev.clientX;
     lastPy = ev.clientY;
-    // pixels → radians; tuned so a full canvas drag ≈ ~90° rotation
     const SENS = 0.005;
     dragYaw -= dx * SENS;
     dragPitch -= dy * SENS;
@@ -170,10 +196,6 @@ export function createRoadTripSystem({
     canvas.releasePointerCapture?.(ev.pointerId);
   }
 
-  /**
-   * Wrap an angle delta into (-π, π] so heading smoothing always rotates the short way around the
-   * unit circle instead of, say, sweeping 359° counter-clockwise to reach a 1° turn.
-   */
   function shortestAngleDelta(from, to) {
     let d = to - from;
     while (d > Math.PI) d -= 2 * Math.PI;
@@ -181,12 +203,6 @@ export function createRoadTripSystem({
     return d;
   }
 
-  /**
-   * Compose the camera transform: position = (rx, ry, exag*rz + height); look along the
-   * inertia-smoothed heading rotated by (yaw_drag, pitch_drag). `dt` is used to advance the
-   * heading low-pass filter toward the raw road tangent; passing 0 leaves the heading untouched
-   * (used by teleport/setHeight to refresh the view without artificially aging the filter).
-   */
   function applyCamera(dt = 0) {
     if (!route) return;
     const s = sampleRoute(route.floats, route.nPts, progress);
@@ -194,20 +210,16 @@ export function createRoadTripSystem({
     const baseZ = s.z * exag;
     camera.position.set(s.x, s.y, baseZ + height);
 
-    // road tangent angle in world XY plane (raw, before smoothing)
     const tangentAngle = Math.atan2(s.fwdY, s.fwdX);
     const targetHeadingYaw = direction > 0 ? tangentAngle : tangentAngle + Math.PI;
     if (smoothedHeadingYaw === null) {
       smoothedHeadingYaw = targetHeadingYaw;
     } else if (dt > 0) {
-      // exponential approach: alpha = 1 - exp(-dt/τ). With τ=4s and dt=1/60s, alpha≈0.0041,
-      // so the heading takes several seconds to fully converge — that's the inertia.
       const alpha = 1 - Math.exp(-dt / HEADING_TIME_CONSTANT);
       smoothedHeadingYaw += shortestAngleDelta(smoothedHeadingYaw, targetHeadingYaw) * alpha;
     }
     const yaw = smoothedHeadingYaw + dragYaw;
     const pitch = dragPitch;
-    // forward vector with pitch (Z-up): horizontal*cos(pitch) + Z*sin(pitch)
     const cy = Math.cos(yaw), sy = Math.sin(yaw);
     const cp = Math.cos(pitch), sp = Math.sin(pitch);
     const LOOK_AT = 200;
@@ -217,77 +229,135 @@ export function createRoadTripSystem({
     camera.up.set(0, 0, 1);
     camera.lookAt(tx, ty, tz);
 
-    // Keep controls.target in lock-step so re-enabling MapControls on stop() yields a sensible
-    // orbit centre instead of an 80km swing back to a stale target.
     if (controls && controls.target) {
       controls.target.set(tx, ty, tz);
     }
   }
 
-  function endpointDistance(endpoint) {
+  /** Returns the cumulative-distance value of the given endpoint on the active route. */
+  function endpointDistance(which) {
     if (!route) return 0;
-    const idx = endpoint === 'mekjarvik' ? route.idxMekjarvik : route.idxEgersund;
+    const idx = which === 'from' ? route.idxFrom : route.idxTo;
     return route.floats[idx * 4 + 3];
+  }
+
+  /**
+   * Parse a .bin ArrayBuffer into the internal `route` shape and snap progress to the FROM
+   * endpoint. Shared between initial load() and runtime setTrip(); kept private so the API
+   * surface stays narrow.
+   */
+  function adoptRouteFromBuffer(ab) {
+    const parsed = parseRouteBuffer(ab);
+    route = {
+      floats: parsed.floats,
+      nPts: parsed.nPts,
+      idxFrom: parsed.idxFrom,
+      idxTo: parsed.idxTo,
+      totalLen: parsed.floats[(parsed.nPts - 1) * 4 + 3],
+    };
+    progress = endpointDistance('from');
+    direction = 1;
+    smoothedHeadingYaw = null;
+    dragYaw = 0; dragPitch = 0; dragYawVel = 0; dragPitchVel = 0;
+  }
+
+  /** Best-effort localStorage read; tolerates SSR/private-mode environments. */
+  function readPersistedTripId() {
+    try {
+      if (typeof localStorage === 'undefined') return null;
+      return localStorage.getItem(TRIP_STORAGE_KEY);
+    } catch { return null; }
+  }
+  function writePersistedTripId(id) {
+    try {
+      if (typeof localStorage === 'undefined') return;
+      localStorage.setItem(TRIP_STORAGE_KEY, id);
+    } catch { /* ignore quota / disabled storage */ }
   }
 
   return {
     /**
-     * Fetches `e39.bin`, parses the route, and snaps the camera to Mekjarvik in idle mode so the
-     * user can immediately teleport/drive without a manual setup step. Idempotent on failure:
-     * leaves `route = null` and surfaces an error via `getState().loaded === false`.
+     * Fetch `trips.json` then the active trip's binary. The "active trip" is the one
+     * persisted in localStorage, falling back to the first manifest entry if that id is
+     * unknown (or no preference recorded). Idempotent on failure: leaves `route = null`.
      */
     async load() {
       try {
-        const ab = await (await fetch('e39.bin')).arrayBuffer();
-        const parsed = parseE39Buffer(ab);
-        route = {
-          floats: parsed.floats,
-          nPts: parsed.nPts,
-          idxMekjarvik: parsed.idxMekjarvik,
-          idxEgersund: parsed.idxEgersund,
-          totalLen: parsed.floats[(parsed.nPts - 1) * 4 + 3],
-        };
-        progress = endpointDistance('mekjarvik');
+        const manifest = await (await fetch(TRIPS_MANIFEST_URL)).json();
+        if (!Array.isArray(manifest) || manifest.length === 0) {
+          throw new Error('trips.json is empty or malformed');
+        }
+        trips = manifest;
+        const persisted = readPersistedTripId();
+        const initial = trips.find((t) => t.id === persisted) || trips[0];
+        currentTripId = initial.id;
+        const ab = await (await fetch(initial.file)).arrayBuffer();
+        adoptRouteFromBuffer(ab);
         notify();
       } catch (e) {
-        console.warn('e39.bin not loaded:', e);
+        console.warn('road-trip load failed:', e);
+        notify();
       }
     },
 
     /**
-     * Snap the camera to one named endpoint without starting motion. Drops drag offsets so the
-     * teleported view faces forward along the road tangent at that endpoint.
+     * Switch to a different trip from the loaded manifest. Stops driving first so the user
+     * can't accidentally keep driving along a now-irrelevant polyline, snaps the camera to
+     * the new trip's FROM endpoint, persists the choice. No-op if `tripId` is unknown or
+     * already active.
      */
-    teleport(endpoint) {
+    async setTrip(tripId) {
+      if (!trips) return;
+      const trip = trips.find((t) => t.id === tripId);
+      if (!trip || trip.id === currentTripId) return;
+      if (mode === 'driving') {
+        mode = 'idle';
+        if (controls) { controls.enabled = true; controls.update?.(); }
+      }
+      try {
+        const ab = await (await fetch(trip.file)).arrayBuffer();
+        currentTripId = trip.id;
+        adoptRouteFromBuffer(ab);
+        writePersistedTripId(trip.id);
+        applyCamera(0);
+        notify();
+      } catch (e) {
+        console.warn(`road-trip setTrip(${tripId}) failed:`, e);
+      }
+    },
+
+    /** Manifest accessor for the panel's dropdown. */
+    getTrips() { return trips ? trips.slice() : []; },
+
+    /** Current trip's manifest entry, or null if nothing loaded. */
+    getCurrentTrip,
+
+    /**
+     * Snap to one positional endpoint without starting motion. `which` is 'from' or 'to'.
+     * Drops drag offsets so the teleported view faces forward along the road tangent.
+     */
+    teleport(which) {
       if (!route) return;
-      progress = endpointDistance(endpoint);
-      // pre-orient: when teleporting to mekjarvik, the natural drive is south (s increasing → +1);
-      // when teleporting to egersund, the natural drive is north (s decreasing → -1).
-      direction = endpoint === 'mekjarvik' ? 1 : -1;
+      progress = endpointDistance(which);
+      // Natural drive direction: from FROM is +1 (toward TO); from TO is -1 (toward FROM).
+      direction = which === 'from' ? 1 : -1;
       dragYaw = 0; dragPitch = 0; dragYawVel = 0; dragPitchVel = 0;
-      // Reset the heading filter so the teleport snaps to face down the road instead of slewing
-      // from whatever heading we had at the last position.
       smoothedHeadingYaw = null;
-      // While idle we still want the camera to actually be over the road, not where MapControls
-      // last left it, so apply now and disable orbit drift until user explicitly resumes idle.
       const wasMode = mode;
       mode = 'driving'; applyCamera(0); mode = wasMode;
-      // Sync controls target to the road-aligned target so MapControls (if still enabled) orbits
-      // around the teleport location instead of the old map centre.
       if (mode === 'idle' && controls) controls.update?.();
       notify();
     },
 
     /**
-     * Begin driving toward the named endpoint. Captures the prior MapControls target so `stop()`
-     * can restore it. Direction is chosen by comparing current progress to the endpoint's s.
+     * Begin driving toward the named positional endpoint ('from' | 'to'). Captures the prior
+     * MapControls target so `stop()` can restore it. Direction is recomputed from the current
+     * progress so this works mid-route as well as immediately after a teleport.
      */
-    startDrive(toEndpoint) {
+    startDrive(toWhich) {
       if (!route) return;
-      const target = endpointDistance(toEndpoint);
+      const target = endpointDistance(toWhich);
       const newDirection = target > progress ? 1 : -1;
-      // If we just reversed direction (e.g. user drove Mekjarvik→Egersund then hit Drive→Mekjarvik
-      // mid-route), snap the heading so the camera doesn't lazily 180° around on its own.
       if (newDirection !== direction) smoothedHeadingYaw = null;
       direction = newDirection;
       if (controls) {
@@ -299,11 +369,6 @@ export function createRoadTripSystem({
       notify();
     },
 
-    /**
-     * Halt driving and hand the camera back to MapControls. The current look target stays in
-     * `controls.target` (set every drive frame) so the user can continue panning/orbiting from
-     * exactly where the drive stopped.
-     */
     stop() {
       if (mode !== 'driving') return;
       mode = 'idle';
@@ -318,10 +383,6 @@ export function createRoadTripSystem({
     setHeight(h) { height = Math.max(2, h); if (mode === 'driving') applyCamera(0); notify(); },
     setSpeed(kmh) { speedKmh = Math.max(1, kmh); notify(); },
 
-    /**
-     * Per-frame tick. While driving: advances `progress` by speed*dt, clamps at endpoints (then
-     * idles automatically), decays drag offsets, and re-applies the camera transform.
-     */
     update(dt) {
       if (mode !== 'driving' || !route) return;
       const ds = (speedKmh / 3.6) * dt * direction;
@@ -329,7 +390,6 @@ export function createRoadTripSystem({
       if (progress <= 0) { progress = 0; mode = 'idle'; if (controls) { controls.enabled = true; controls.update?.(); } notify(); return; }
       if (progress >= route.totalLen) { progress = route.totalLen; mode = 'idle'; if (controls) { controls.enabled = true; controls.update?.(); } notify(); return; }
       if (!dragging) {
-        // Exponential decay toward zero so the view eases back to forward when the user releases.
         const decay = Math.exp(-YAW_DECAY * dt);
         const pdecay = Math.exp(-PITCH_DECAY * dt);
         dragYaw *= decay;
@@ -338,10 +398,6 @@ export function createRoadTripSystem({
       applyCamera(dt);
     },
 
-    /**
-     * Attach DOM listeners for drag-look. Caller is expected to call this once; pointer events
-     * are filtered to only act while driving so MapControls is unaffected during idle.
-     */
     attachInput() {
       canvas.addEventListener('pointerdown', onPointerDown);
       canvas.addEventListener('pointermove', onPointerMove);
@@ -349,10 +405,6 @@ export function createRoadTripSystem({
       canvas.addEventListener('pointercancel', onPointerUp);
     },
 
-    /**
-     * Subscribe to state-change events. Returns an unsubscribe function. Used by the UI panel
-     * to keep button labels and the progress readout in sync with internal state.
-     */
     onChange(fn) {
       onStateChange.add(fn);
       return () => onStateChange.delete(fn);
