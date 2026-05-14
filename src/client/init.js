@@ -1,0 +1,437 @@
+import {
+  CAMERA_STORAGE_KEY,
+  DEFAULT_BUILDING_RANGE_KM,
+  DEFAULT_CANOPY_LOD_KM,
+  DEFAULT_CANOPY_RANGE_KM,
+  DEFAULT_DRAPE_OFFSET_METRES, // imported for future drape default extraction; no matching JS variable yet
+  DEFAULT_EXAGGERATION,
+  DEFAULT_SEGMENTS,
+  DEFAULT_SSE_PX,
+  ELEV_MAX as DEFAULT_ELEV_MAX,
+  TREE_CANOPY_FADE_WIDTH_METRES,
+} from './core/constants.js';
+import { restoreCamera, saveCamera } from './rendering/camera-persistence.js';
+import { createCompass } from './rendering/compass.js';
+import { createViewerScene } from './rendering/scene.js';
+import { createAppState } from './core/app-state.js';
+import { createWorldTransform } from './core/coordinates.js';
+import { createTileCache } from './terrain/tile-cache.js';
+import { createTerrainMeshPool } from './terrain/terrain-mesh-pool.js';
+import { createFrustumCuller } from './rendering/frustum-culler.js';
+import { createTerrainLodRenderer } from './terrain/terrain-lod.js';
+import { startRenderLoop } from './rendering/render-loop.js';
+import {
+  createBuildingMaterial,
+  createTerrainMaterial,
+  createWaterMaterial,
+} from './rendering/material-factory.js';
+import { createAmenitiesSystem } from './features/amenities.js';
+import { createBuildingSystem } from './features/buildings.js';
+import { createForestSystem } from './features/forest.js';
+import { createWaterSystem } from './features/water.js';
+import { createFaultSystem } from './overlays/faults.js';
+import { createGeologySystem } from './overlays/geology.js';
+import { attachIdentifyHandlers } from './overlays/identify.js';
+import { createRoadSystem } from './overlays/roads.js';
+import { attachControls } from './ui/controls.js';
+
+
+export async function initializeViewer({ THREE, MapControls }) {
+  const meta = await (await fetch('tiles/meta.json')).json();
+  const world = createWorldTransform(meta);
+  const ROOT_X = world.rootX;
+  const ROOT_Y = world.rootY;
+  const ROOT_SIZE = world.rootSize;
+  const MAX_Z = meta.maxZ;
+  const SRC = meta.src;
+  const ELEV_MAX = meta.elevMax || DEFAULT_ELEV_MAX;
+  const TILE_PX = meta.tileSize;
+  const CENTER_X = world.centerX;
+  const CENTER_Y = world.centerY;
+  
+  const viewerScene = createViewerScene({ THREE, MapControls, canvas: document.querySelector('canvas'), meta });
+  const { scene, camera, controls, renderer, groups } = viewerScene;
+  const {
+    roadsGroup,
+    townsGroup,
+    buildingsGroup,
+    amenitiesGroup,
+    treesGroup,
+    canopyGroup,
+    faultsGroup,
+  } = groups;
+  const { near: FOG_NEAR, far: FOG_FAR, color: FOG_COLOR } = viewerScene.fog;
+  const SUN = viewerScene.sun;
+  window.__viewer = { camera, controls, renderer, scene };
+  
+  // ---------- persist camera + target across reloads ----------
+  const CAM_STORAGE_KEY = CAMERA_STORAGE_KEY;
+  restoreCamera({ camera, controls, storageKey: CAM_STORAGE_KEY });
+  
+  let _camSaveTimer = 0;
+  function _saveCameraNow(){
+    saveCamera({ camera, controls, storageKey: CAM_STORAGE_KEY });
+  }
+  controls.addEventListener('change', () => {
+    if (_camSaveTimer) return;
+    _camSaveTimer = setTimeout(() => { _camSaveTimer = 0; _saveCameraNow(); }, 250);
+  });
+  addEventListener('beforeunload', _saveCameraNow);
+  
+  // ---------- OSM overlay (roads + kommune boundaries) ----------
+  const overlayUniforms = {
+    uExag:   { value: 1.4 },
+    uOffset: { value: 12.0 },
+  };
+  
+  // ---------- Buildings (stylized Norwegian houses + apartments) ----------
+  const buildingUniforms = {
+    uExag:      { value: 1.4 },
+    uExtraLift: { value: 0.5 },
+    uSun:       { value: SUN.clone() },
+    uFogNear:   { value: FOG_NEAR },
+    uFogFar:    { value: FOG_FAR },
+    uFogColor:  { value: FOG_COLOR },
+    uFadeNear:  { value: 18000 },
+    uFadeFar:   { value: 22000 },
+  };
+  let BLD_RANGE = DEFAULT_BUILDING_RANGE_KM * 1000;
+  const buildingMaterial = createBuildingMaterial(buildingUniforms);
+  const buildingSystem = createBuildingSystem({
+    THREE,
+    scene,
+    buildingsGroup,
+    buildingUniforms,
+    buildingMaterial,
+    elevationMax: ELEV_MAX,
+  });
+  buildingSystem.load();
+  
+  // ---------- Civic amenities (pitches, parks, playgrounds, props) ----------
+  const amenityAreaUniforms = {
+    uExag:      { value: 1.4 },
+    uExtraLift: { value: 1.2 },
+    uSun:       { value: SUN.clone() },
+    uFogNear:   { value: FOG_NEAR },
+    uFogFar:    { value: FOG_FAR },
+    uFogColor:  { value: FOG_COLOR },
+    uFadeNear:  { value: 18000 },
+    uFadeFar:   { value: 22000 },
+  };
+  
+  const amenityPropUniforms = {
+    uExag:     { value: 1.4 },
+    uSun:      { value: SUN.clone() },
+    uFogNear:  { value: FOG_NEAR },
+    uFogFar:   { value: FOG_FAR },
+    uFogColor: { value: FOG_COLOR },
+    uFadeNear: { value: 3500 },
+    uFadeFar:  { value: 5000 },
+  };
+  const amenitiesSystem = createAmenitiesSystem({
+    THREE,
+    scene,
+    amenitiesGroup,
+    amenityAreaUniforms,
+    amenityPropUniforms,
+  });
+  amenitiesSystem.load();
+  
+  // ---------- Forest (low-poly conifers / birches at OSM forest cover) ----------
+  const treeUniforms = {
+    uExag:      { value: 1.4 },
+    uExtraLift: { value: 0.4 },
+    uSun:       { value: SUN.clone() },
+    uFogNear:   { value: FOG_NEAR },
+    uFogFar:    { value: FOG_FAR },
+    uFogColor:  { value: FOG_COLOR },
+    uFadeNear:  { value: 1200 },
+    uFadeFar:   { value: 1800 },
+  };
+  let CANOPY_LOD_LO = DEFAULT_CANOPY_LOD_KM * 1000 - TREE_CANOPY_FADE_WIDTH_METRES;
+  let CANOPY_LOD_HI = DEFAULT_CANOPY_LOD_KM * 1000 + TREE_CANOPY_FADE_WIDTH_METRES;
+  let CANOPY_RANGE  = DEFAULT_CANOPY_RANGE_KM * 1000;
+  
+  const canopyUniforms = {
+    uExag:      { value: 1.4 },
+    uExtraLift: { value: 0.4 },
+    uSun:       { value: SUN.clone() },
+    uFogNear:   { value: FOG_NEAR },
+    uFogFar:    { value: FOG_FAR },
+    uFogColor:  { value: FOG_COLOR },
+    uFadeNear:  { value: CANOPY_LOD_LO },
+    uFadeFar:   { value: CANOPY_LOD_HI },
+    uRangeNear: { value: CANOPY_RANGE - 2000 },
+    uRangeFar:  { value: CANOPY_RANGE },
+  };
+  const forestSystem = createForestSystem({
+    THREE,
+    scene,
+    treesGroup,
+    canopyGroup,
+    treeUniforms,
+    canopyUniforms,
+    elevationMax: ELEV_MAX,
+  });
+  forestSystem.loadCanopy();
+  
+  // ---------------- inland water bodies ----------------
+  const waterUniforms = {
+    uExag: { value: 1.4 },
+    uSun:  { value: SUN.clone() },
+  };
+  const waterMaterial = createWaterMaterial(waterUniforms);
+  const waterSystem = createWaterSystem({ THREE, scene, waterUniforms, waterMaterial });
+  waterSystem.load();
+  forestSystem.loadTrees();
+  // ---------------- end inland water -----------------
+  
+  
+  const tileCache = createTileCache({ THREE, maxEntries: 400 });
+  
+  // ---------- shared geometry ----------
+  const SEG = DEFAULT_SEGMENTS;
+  const initialPlane = new THREE.PlaneGeometry(1, 1, SEG, SEG);
+  
+  // ---------- shader ----------
+  // Shared geology overlay uniforms — all terrain materials get these
+  // by reference, so toggling a value affects every tile mesh at once.
+  const _dummyGeoTex = new THREE.DataTexture(new Uint8Array([0, 0]), 1, 1, THREE.RGFormat, THREE.UnsignedByteType);
+  _dummyGeoTex.needsUpdate = true;
+  const _dummyPalTex = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1, THREE.RGBAFormat, THREE.UnsignedByteType);
+  _dummyPalTex.needsUpdate = true;
+  const geoUniforms = {
+    uBedTex:      { value: _dummyGeoTex },
+    uBedPalette:  { value: _dummyPalTex },
+    uBedShow:     { value: 0.0 },
+    uBedPalN:     { value: 1.0 },
+    uQuatTex:     { value: _dummyGeoTex },
+    uQuatPalette: { value: _dummyPalTex },
+    uQuatShow:    { value: 0.0 },
+    uQuatPalN:    { value: 1.0 },
+    uGeoBBox:     { value: new THREE.Vector4(0, 0, 1, 1) },
+    uGeoOpacity:  { value: 0.6 },
+  };
+  
+  // Shared contour uniforms — same sharing pattern as geology.
+  const contourUniforms = {
+    uContourShow:      { value: 0.0 },
+    uContourInterval:  { value: 100.0 },
+    uContourBoldEvery: { value: 5.0 },
+    uContourColor:     { value: new THREE.Color(0x2a1a08) },  // thin: dark brown
+    uContourBoldColor: { value: new THREE.Color(0x140803) },  // bold: near-black
+    uContourOpacity:   { value: 0.75 },
+  };
+  
+  // Shared road overlay uniforms. Roads are NOT drawn as separate meshes;
+  // instead, the terrain fragment shader looks up the nearest road segment
+  // for each pixel via a coarse spatial grid (built from osm.bin at load
+  // time) and tints the terrain colour where the pixel falls within road
+  // half-width of a segment. See buildRoadOverlay() below.
+  const _dummyRoadGrid = new THREE.DataTexture(new Float32Array([0, 0]), 1, 1, THREE.RGFormat, THREE.FloatType);
+  _dummyRoadGrid.minFilter = THREE.NearestFilter; _dummyRoadGrid.magFilter = THREE.NearestFilter; _dummyRoadGrid.needsUpdate = true;
+  const _dummyRoadRefs = new THREE.DataTexture(new Float32Array([0,0,0,0]), 1, 1, THREE.RGBAFormat, THREE.FloatType);
+  _dummyRoadRefs.minFilter = THREE.NearestFilter; _dummyRoadRefs.magFilter = THREE.NearestFilter; _dummyRoadRefs.needsUpdate = true;
+  const _dummyRoadCls = new THREE.DataTexture(new Uint8Array([0]), 1, 1, THREE.RedFormat, THREE.UnsignedByteType);
+  _dummyRoadCls.minFilter = THREE.NearestFilter; _dummyRoadCls.magFilter = THREE.NearestFilter; _dummyRoadCls.needsUpdate = true;
+  const roadUniforms = {
+    uRoadGrid:      { value: _dummyRoadGrid },
+    uRoadRefs:      { value: _dummyRoadRefs },
+    uRoadCls:       { value: _dummyRoadCls },
+    uRoadOrigin:    { value: new THREE.Vector2(0, 0) },
+    uRoadCell:      { value: 500.0 },
+    uRoadGridDims:  { value: new THREE.Vector2(1, 1) },
+    uRoadRefsDims:  { value: new THREE.Vector2(1, 1) },
+    uRoadShow:      { value: 1.0 },
+    uRoadReady:     { value: 0.0 },
+  };
+  
+  function makeMaterial(){
+    return createTerrainMaterial({
+        uHeight:   { value: null },
+        uOriginXY: { value: new THREE.Vector2() },
+        uTileSize: { value: 1 },
+        uExag:     { value: 1.4 },
+        uElevMax:  { value: ELEV_MAX },
+        uSun:      { value: SUN.clone() },
+        uSeg:      { value: SEG },
+        uUVScale:  { value: new THREE.Vector2(1,1) },
+        uUVOffset: { value: new THREE.Vector2(0,0) },
+        uFogNear:  { value: FOG_NEAR },
+        uFogFar:   { value: FOG_FAR },
+        uFogColor: { value: FOG_COLOR },
+        // geology overlay (shared-by-reference; updated once per uniform):
+        uBedTex:      geoUniforms.uBedTex,
+        uBedPalette:  geoUniforms.uBedPalette,
+        uBedShow:     geoUniforms.uBedShow,
+        uBedPalN:     geoUniforms.uBedPalN,
+        uQuatTex:     geoUniforms.uQuatTex,
+        uQuatPalette: geoUniforms.uQuatPalette,
+        uQuatShow:    geoUniforms.uQuatShow,
+        uQuatPalN:    geoUniforms.uQuatPalN,
+        uGeoBBox:     geoUniforms.uGeoBBox,
+        uGeoOpacity:  geoUniforms.uGeoOpacity,
+        // contour overlay (shared-by-reference):
+        uContourShow:      contourUniforms.uContourShow,
+        uContourInterval:  contourUniforms.uContourInterval,
+        uContourBoldEvery: contourUniforms.uContourBoldEvery,
+        uContourColor:     contourUniforms.uContourColor,
+        uContourBoldColor: contourUniforms.uContourBoldColor,
+        uContourOpacity:   contourUniforms.uContourOpacity,
+        // road overlay (shared-by-reference):
+        uRoadGrid:      roadUniforms.uRoadGrid,
+        uRoadRefs:      roadUniforms.uRoadRefs,
+        uRoadCls:       roadUniforms.uRoadCls,
+        uRoadOrigin:    roadUniforms.uRoadOrigin,
+        uRoadCell:      roadUniforms.uRoadCell,
+        uRoadGridDims:  roadUniforms.uRoadGridDims,
+        uRoadRefsDims:  roadUniforms.uRoadRefsDims,
+        uRoadShow:      roadUniforms.uRoadShow,
+        uRoadReady:     roadUniforms.uRoadReady,
+    });
+  }
+  
+  // ---------- mesh pool ----------
+  const terrainMeshPool = createTerrainMeshPool({ THREE, scene, makeMaterial, initialGeometry: initialPlane });
+  
+  // ---------- quadtree LOD ----------
+  let SSE_PX = DEFAULT_SSE_PX;
+  let EXAG = DEFAULT_EXAGGERATION;
+  const roadSystem = createRoadSystem({
+    THREE,
+    scene,
+    roadUniforms,
+    overlayUniforms,
+    roadsGroup,
+    townsGroup,
+    src: SRC,
+    centerX: CENTER_X,
+    centerY: CENTER_Y,
+  });
+  roadSystem.setExaggeration(EXAG);
+  roadSystem.load();
+  // ---------------- faults layer (FLT1) -----------------
+  // ---------------- geology raster overlay (BRR1 / QRR1) -----------------
+  const geologySystem = createGeologySystem({ THREE, geoUniforms, faultsGroup });
+  geologySystem.loadBedrock();
+  geologySystem.loadQuaternary();
+  // ---------------- end geology raster overlay -----------------
+  
+  const faultSystem = createFaultSystem({ THREE, scene, faultsGroup, getExaggeration: () => EXAG });
+  faultSystem.load();
+  // ---------------- end faults layer -----------------
+  
+  // ---------------- click-to-identify geology (raster lookup) -----------------
+  const idPanel = document.createElement('div');
+  idPanel.id = 'id-panel';
+  idPanel.style.cssText = 'position:fixed;display:none;background:rgba(0,0,0,0.78);color:#cdd;padding:8px 22px 8px 10px;border:1px solid #555;border-radius:6px;font:12px system-ui;z-index:9999;max-width:260px';
+  document.body.appendChild(idPanel);
+  
+  const idClose = document.createElement('button');
+  idClose.type = 'button';
+  idClose.setAttribute('aria-label', 'Close');
+  idClose.textContent = '×';
+  idClose.style.cssText = 'position:absolute;top:1px;right:3px;width:14px;height:14px;padding:0;line-height:12px;font-size:14px;background:transparent;color:#aaa;border:none;cursor:pointer;font-family:system-ui';
+  idClose.addEventListener('mouseenter', () => { idClose.style.color = '#fff'; });
+  idClose.addEventListener('mouseleave', () => { idClose.style.color = '#aaa'; });
+  idClose.addEventListener('click', (e) => {
+    e.stopPropagation();
+    idPanel.style.display = 'none';
+    if (_idHideTimer) { clearTimeout(_idHideTimer); _idHideTimer = null; }
+  });
+  idPanel.appendChild(idClose);
+  
+  const idContent = document.createElement('div');
+  idPanel.appendChild(idContent);
+  
+  let _idHideTimer = null;
+  function showIdPanel(x, y, info) {
+    if (!info.bedrock && !info.quat) { idPanel.style.display = 'none'; return; }
+    const swatch = (hex) => `<span style="display:inline-block;width:10px;height:10px;background:${hex};border:1px solid #888;margin-right:4px;vertical-align:middle"></span>`;
+    let html = '';
+    if (info.bedrock) html += `<div>${swatch(info.bedrock.color)}<b>Bedrock:</b> ${info.bedrock.name} <span style="opacity:0.6">(${info.bedrock.scale})</span></div>`;
+    if (info.quat)    html += `<div>${swatch(info.quat.color)}<b>Quaternary:</b> ${info.quat.name} <span style="opacity:0.6">(${info.quat.scale})</span></div>`;
+    idContent.innerHTML = html;
+    idPanel.style.left = `${x + 12}px`;
+    idPanel.style.top  = `${y + 12}px`;
+    idPanel.style.display = 'block';
+    if (_idHideTimer) clearTimeout(_idHideTimer);
+    _idHideTimer = setTimeout(() => { idPanel.style.display = 'none'; }, 8000);
+  }
+  
+  attachIdentifyHandlers({
+    canvas: renderer.domElement,
+    camera,
+    scene,
+    geologySystem,
+    showPanel: showIdPanel,
+  });
+  // ---------------- end click-to-identify -----------------
+  
+  const culler = createFrustumCuller(THREE);
+  const terrainLod = createTerrainLodRenderer({
+    THREE, meta, centerX: CENTER_X, centerY: CENTER_Y, camera, renderer,
+    frustum: culler.frustum,
+    getTile: tileCache.getTile,
+    meshPool: terrainMeshPool,
+    getExag: () => EXAG,
+    getSsePx: () => SSE_PX,
+    initialSeg: SEG,
+    initialPlane,
+    ELEV_MAX, SUN, FOG_NEAR, FOG_FAR, FOG_COLOR,
+  });
+  
+  const compass = createCompass({ THREE, renderer, camera });
+  
+  const appState = createAppState({
+    exag: EXAG,
+    ssePx: SSE_PX,
+    seg: SEG,
+    buildingRange: BLD_RANGE,
+    canopyRange: CANOPY_RANGE,
+    canopyLodLo: CANOPY_LOD_LO,
+    canopyLodHi: CANOPY_LOD_HI,
+  });
+  
+  attachControls({
+    appState,
+    systems: {
+      roads: roadSystem,
+      buildings: buildingSystem,
+      amenities: amenitiesSystem,
+      forest: forestSystem,
+      water: waterSystem,
+      geology: geologySystem,
+      faults: faultSystem,
+    },
+    uniforms: {
+      overlayUniforms,
+      buildingUniforms,
+      treeUniforms,
+      canopyUniforms,
+      waterUniforms,
+      amenityAreaUniforms,
+      amenityPropUniforms,
+      geoUniforms,
+      contourUniforms,
+    },
+    rebuildPlane: terrainLod.rebuildPlane,
+    stateAccessors: {
+      setExag(value) { EXAG = value; },
+      setSsePx(value) { SSE_PX = value; },
+      setBuildingRange(value) { BLD_RANGE = value; },
+      setCanopyRange(value) { CANOPY_RANGE = value; },
+      setCanopyLod(lo, hi) { CANOPY_LOD_LO = lo; CANOPY_LOD_HI = hi; },
+      getSegments() { return terrainLod.getSegments(); },
+    },
+  });
+  
+  addEventListener('resize', viewerScene.resize);
+  
+  startRenderLoop({
+    controls, camera, culler, terrain: terrainLod,
+    systems: { buildings: buildingSystem, forest: forestSystem },
+    getBldRange: () => BLD_RANGE,
+    tileCache, renderer, scene, compass,
+  });
+}
