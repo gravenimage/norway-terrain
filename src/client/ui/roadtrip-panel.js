@@ -21,13 +21,11 @@ export function attachRoadTripPanel({ roadTripSystem }) {
   panel.innerHTML = `
     <details class="panel-body" data-panel-key="roadtrip" open>
       <summary style="letter-spacing:.04em">ROAD TRIP · E39</summary>
-      <div style="display:flex;gap:6px;margin-bottom:6px;margin-top:6px">
-        <button data-rt="tp-mek" style="flex:1">→ Mekjarvik</button>
-        <button data-rt="tp-egs" style="flex:1">→ Egersund</button>
-      </div>
-      <div style="display:flex;gap:6px;margin-bottom:8px">
-        <button data-rt="drive" style="flex:1;background:#1a4070;color:#fff">Drive</button>
-        <button data-rt="stop" style="flex:1">Stop</button>
+      <div style="display:flex;gap:4px;margin-bottom:8px;margin-top:6px;align-items:stretch">
+        <button data-rt="tp-mek" style="flex:1;white-space:nowrap">Mekjarvik</button>
+        <button data-rt="drive" style="flex:1;background:#1a4070;color:#fff;white-space:nowrap">Drive →</button>
+        <button data-rt="stop" title="Stop" style="width:30px;padding:0;font-size:14px">⏸</button>
+        <button data-rt="tp-egs" style="flex:1;white-space:nowrap">Egersund</button>
       </div>
       <label style="display:block;margin:4px 0">
         <span data-rt="height-label">Height: 75 m</span>
@@ -62,8 +60,9 @@ export function attachRoadTripPanel({ roadTripSystem }) {
   btnTpEgs.addEventListener('click', () => roadTripSystem.teleport('egersund'));
   btnDrive.addEventListener('click', () => {
     const st = roadTripSystem.getState();
-    // Default destination is whichever endpoint is further away in progress-space.
-    const target = st.progress < st.totalLen / 2 ? 'egersund' : 'mekjarvik';
+    // Direction is set by the most recent teleport (and persists thereafter), so the Drive button
+    // always sends the camera the way its arrow is pointing.
+    const target = st.direction > 0 ? 'egersund' : 'mekjarvik';
     roadTripSystem.startDrive(target);
   });
   btnStop.addEventListener('click', () => roadTripSystem.stop());
@@ -83,6 +82,10 @@ export function attachRoadTripPanel({ roadTripSystem }) {
    * change event and once on attach to seed the UI for an unloaded route.
    */
   function render(state) {
+    // The Drive button label always reflects the current direction of travel so the user can
+    // tell at a glance where it'll send them (matches the arrow shown next to the endpoint
+    // they last teleported to, or the prior drive direction if they never teleported).
+    btnDrive.textContent = state.direction > 0 ? 'Drive →' : '← Drive';
     if (!state.loaded) {
       statusEl.textContent = 'loading e39.bin…';
       btnDrive.disabled = btnStop.disabled = btnTpMek.disabled = btnTpEgs.disabled = true;
