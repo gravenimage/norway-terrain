@@ -89,7 +89,7 @@ export function parseBuildingsBuffer(buffer) {
  * mutated in place, load() is fire-and-forget, and visibility is combined with
  * amenities elsewhere through the shared showBld toggle.
  */
-export function createBuildingSystem({ THREE, scene, buildingsGroup, buildingUniforms, buildingMaterial, elevationMax = 14835 }) {
+export function createBuildingSystem({ THREE, scene, buildingsGroup, buildingUniforms, buildingMaterial, elevationMax = 14835, obstacles = null }) {
   void scene;
   const buildingCells = [];
   const cellSphere = THREE.Sphere ? new THREE.Sphere() : null;
@@ -108,6 +108,12 @@ export function createBuildingSystem({ THREE, scene, buildingsGroup, buildingUni
           (await fetch('buildings.bin')).arrayBuffer(),
         ]);
         const { n, records, bins } = parseBuildingsBuffer(ab);
+        if (obstacles && typeof obstacles.setBuildings === 'function') {
+          // Publish parsed building footprints to the placement obstacle service so tree generation
+          // can avoid roofs. Called before mesh construction so trees never need to wait on three.js
+          // work that is unrelated to their decision-making.
+          obstacles.setBuildings({ records, n });
+        }
         const houseGeom = makeHouseGeometry();
         let totalCells = 0;
         for (const [, idxArr] of bins){
@@ -169,6 +175,7 @@ export function createBuildingSystem({ THREE, scene, buildingsGroup, buildingUni
           `<br>buildings: ${n.toLocaleString()} in ${totalCells} cells`);
       } catch (e) {
         console.warn('buildings.bin not loaded:', e);
+        if (obstacles && typeof obstacles.markBuildingsEmpty === 'function') obstacles.markBuildingsEmpty();
       }
     },
     /**

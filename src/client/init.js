@@ -40,6 +40,7 @@ import { createGeologySystem } from './overlays/geology.js';
 import { attachIdentifyHandlers } from './overlays/identify.js';
 import { createRoadSystem } from './overlays/roads.js';
 import { attachControls } from './ui/controls.js';
+import { createPlacementObstacles } from './placement/obstacles.js';
 
 
 /**
@@ -100,6 +101,10 @@ export async function initializeViewer({ THREE, MapControls }) {
   };
   
   // ---------- Buildings (stylized Norwegian houses + apartments) ----------
+  // Placement obstacle service must be built before any feature system that depends on it so the
+  // ready-promises are observable by all consumers. Roads and buildings publish into it, forest
+  // trees read from it during their async generation.
+  const placementObstacles = createPlacementObstacles();
   const buildingUniforms = {
     uExag:      { value: 1.4 },
     uExtraLift: { value: 0.5 },
@@ -119,6 +124,7 @@ export async function initializeViewer({ THREE, MapControls }) {
     buildingUniforms,
     buildingMaterial,
     elevationMax: ELEV_MAX,
+    obstacles: placementObstacles,
   });
   buildingSystem.load();
   
@@ -233,6 +239,7 @@ export async function initializeViewer({ THREE, MapControls }) {
     treeUniforms,
     canopyUniforms,
     elevationMax: ELEV_MAX,
+    obstacles: placementObstacles,
   });
   forestSystem.loadCanopy();
   
@@ -366,6 +373,7 @@ export async function initializeViewer({ THREE, MapControls }) {
     src: SRC,
     centerX: CENTER_X,
     centerY: CENTER_Y,
+    obstacles: placementObstacles,
   });
   roadSystem.setExaggeration(EXAG);
   roadSystem.load();

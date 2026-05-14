@@ -115,6 +115,7 @@ export function createRoadSystem({
   src = null,
   centerX = 0,
   centerY = 0,
+  obstacles = null,
 }) {
   void scene;
 
@@ -262,6 +263,17 @@ export function createRoadSystem({
 
     window.__roadGrid = { gridW, gridH, gridData, maxCellCount, totalRefs, N, cell, xMinC, yMinC };
 
+    if (obstacles && typeof obstacles.setRoads === 'function') {
+      // Hand the same per-cell segment index lists to the CPU placement obstacle service so it can
+      // reject tree spawn points sitting on roads. Reusing `cells` is safe — neither the road
+      // overlay code below nor the obstacles service mutates it after construction.
+      obstacles.setRoads({
+        cells,
+        segAx, segAy, segBx, segBy, segCls,
+        gridW, gridH, cellSize: cell, xMinC, yMinC,
+      });
+    }
+
     console.log(`roads: ${N.toLocaleString()} segs · grid ${gridW}×${gridH} @ ${cell}m · ${totalRefs.toLocaleString()} refs · max ${maxCellCount} segs/cell · refs tex ${refsTexW}×${refsTexH}`);
     if (maxCellCount > 128) console.warn(`road grid: ${maxCellCount} > 128 segs in some cell — overflow truncated`);
   }
@@ -289,6 +301,7 @@ export function createRoadSystem({
           `<br>roads: ${parsed.totalSegs.toLocaleString()} segs · kommune: ${parsed.townSegs.toLocaleString()} segs`);
       } catch (e) {
         console.warn('osm.bin not loaded:', e);
+        if (obstacles && typeof obstacles.markRoadsEmpty === 'function') obstacles.markRoadsEmpty();
       }
     },
     /** Toggle road draping through `roadUniforms.uRoadShow` and the optional roads group. */

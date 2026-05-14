@@ -1,6 +1,7 @@
 /** @file TRE1/TRE2 forest parser plus stateful tree/canopy scene system. */
 import { readMagic } from '../core/binary.js';
 import { parseCanopyBuffer } from './canopy.js';
+import { createNullObstacles } from '../placement/obstacles.js';
 
 export const FOREST_CONTRACT = Object.freeze({
   magic: Object.freeze(['TRE1', 'TRE2']),
@@ -88,7 +89,7 @@ export function parseForestBuffer(buffer) {
  * loadCanopy() are fire-and-forget, and updateForGeology couples forest
  * visibility to geology overlays.
  */
-export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, treeUniforms, canopyUniforms, elevationMax = 14835 }) {
+export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, treeUniforms, canopyUniforms, elevationMax = 14835, obstacles = createNullObstacles() }) {
   void scene;
   const treeCells = [];
   const canopyCells = [];
@@ -124,6 +125,10 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
           import('../rendering/material-factory.js'),
           (await fetch('forest.bin')).arrayBuffer(),
         ]);
+        // Wait for road and building footprints to be ready (or marked empty) so the per-instance
+        // cull below sees a complete obstacle map. Tree generation runs once and is non-trivial,
+        // so the small extra latency is preferable to leaking trees onto roads / through roofs.
+        await Promise.all([obstacles.roadsReady, obstacles.buildingsReady]);
         const { n, records, bins } = parseForestBuffer(ab);
         const treeGeom = makeTreeGeometry();
         const treeMaterial = materials.createTreeMaterial(treeUniforms);
@@ -142,6 +147,7 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
         };
         let totalCells = 0;
         let totalInstances = 0;
+        let totalCulled = 0;
         for (const [, idxArr] of bins){
           const m = idxArr.length;
           if (!m) continue;
@@ -188,6 +194,10 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
               const offV = jh(seedIdx, 9993) * 0.45;
               const cx = cx0 + (u2 + offU) * QUAD_M;
               const cy = cy0 + (v2 + offV) * QUAD_M;
+              // Cull trees whose base intersects a road or building footprint. Doing this on the
+              // CPU at tree-spawn time avoids the visible "chopped tree" artefact that happens
+              // when the fragment shader discards only the parts of a tree over the road.
+              if (obstacles.isBlocked(cx, cy)) { totalCulled++; continue; }
               const fu = Math.max(0, Math.min(1, (u2 + offU) + 0.5));
               const fv = Math.max(0, Math.min(1, (v2 + offV) + 0.5));
               const dz = (d00 * (1 - fu) * (1 - fv))
@@ -223,6 +233,7 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
               wi++;
             }
           }
+          if (wi === 0) continue;
           const cellCx = (bxMin + bxMax) / 2, cellCy = (byMin + byMax) / 2;
           const radius = Math.hypot(bxMax - cellCx, byMax - cellCy) + 30;
 
@@ -241,17 +252,17 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
           ig.setAttribute('iRot',     aRot);
           ig.setAttribute('iCanopyA', aCanopyA);
           ig.setAttribute('iCanopyB', aCanopyB);
-          ig.instanceCount = M;
+          ig.instanceCount = wi;
           const mesh = new THREE.Mesh(ig, treeMaterial);
           mesh.frustumCulled = false;
           mesh.renderOrder = 1;
           treesGroup.add(mesh);
-          totalInstances += M;
+          totalInstances += wi;
           treeCells.push({ mesh, cx: cellCx, cy: cellCy, radius, maxH, count: m });
           totalCells++;
         }
         document.getElementById('hud').insertAdjacentHTML('beforeend',
-          `<br>trees: ${totalInstances.toLocaleString()} (×${K_TREES} from ${n.toLocaleString()} seeds) in ${totalCells} cells, < ${(canopyLodHi/1000).toFixed(1)} km`);
+          `<br>trees: ${totalInstances.toLocaleString()} (×${K_TREES} from ${n.toLocaleString()} seeds, ${totalCulled.toLocaleString()} culled on roads/buildings) in ${totalCells} cells, < ${(canopyLodHi/1000).toFixed(1)} km`);
       } catch (e) {
         console.warn('forest.bin not loaded:', e);
       }
