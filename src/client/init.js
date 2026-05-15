@@ -45,6 +45,7 @@ import { createGeologySystem } from './overlays/geology.js';
 import { attachIdentifyHandlers } from './overlays/identify.js';
 import { createRoadSystem } from './overlays/roads.js';
 import { attachControls } from './ui/controls.js';
+import { validateDomIds } from './ui/dom-ids.js';
 import { createPlacementObstacles } from './placement/obstacles.js';
 import { createRoadTripSystem } from './features/roadtrip.js';
 import { attachRoadTripPanel } from './ui/roadtrip-panel.js';
@@ -107,6 +108,7 @@ async function _initializeViewerImpl({ THREE, MapControls }) {
   const CENTER_Y = world.centerY;
   
   const viewerScene = createViewerScene({ THREE, MapControls, canvas: document.querySelector('canvas'), meta });
+  validateDomIds();
   const { scene, camera, controls, renderer, groups } = viewerScene;
   const {
     roadsGroup,
