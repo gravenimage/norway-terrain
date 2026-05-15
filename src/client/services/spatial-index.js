@@ -15,47 +15,41 @@
  *   3. buildings.js calls setBuildings(...) after parsing buildings.bin (or markBuildingsEmpty()).
  *   4. forest.js awaits roadsReady and buildingsReady before generating tree instances and calls
  *      isBlocked(x, y) per candidate, dropping those that hit roads or buildings.
+ *
+ * The hot-loop math now lives in core/obstacles-query.js so it can be shared with the forest
+ * generation Web Worker. This file owns lifecycle (ready promises + setters) plus the flat-state
+ * adapters; the math itself is identical on main thread and worker.
  */
 
-const ROAD_HALF_W = [6.5, 5.0, 4.0, 3.25, 2.75];
-
-/**
- * Squared distance from point (px, py) to segment (ax, ay)-(bx, by). Square root is avoided in the
- * hot loop; callers pre-square their margin.
- */
-function distSqPointSeg(px, py, ax, ay, bx, by) {
-  const dx = bx - ax;
-  const dy = by - ay;
-  const L2 = Math.max(dx * dx + dy * dy, 1e-6);
-  let t = ((px - ax) * dx + (py - ay) * dy) / L2;
-  if (t < 0) t = 0; else if (t > 1) t = 1;
-  const rx = px - (ax + dx * t);
-  const ry = py - (ay + dy * t);
-  return rx * rx + ry * ry;
-}
+import {
+  couldBeBlocked as couldBeBlockedQuery,
+  flattenBuildingCells,
+  flattenRoadCells,
+  isBlocked as isBlockedQuery,
+} from '../core/obstacles-query.js';
 
 /**
  * Construct a placement obstacles service. Roads and buildings each start unresolved and unblock
  * tree placement only when their data (or an empty placeholder) is registered. The service stores
- * raw segment arrays for roads and builds its own fine spatial grid for buildings (the BLD1 parser
- * bins at 8 km which is too coarse for per-tree probes).
+ * flat-array obstacle state internally so the same memory layout can be queried directly on the
+ * main thread and cloned cheaply for a worker.
  */
 export function createPlacementObstacles() {
-  let roads = null;
-  let buildings = null;
+  let roadsState = null;
+  let buildingsState = null;
+  let buildingsBlankRecords = null;   // records reference kept so consumers can still read columns
   let resolveRoads;
   let resolveBuildings;
   const roadsReady = new Promise((r) => { resolveRoads = r; });
   const buildingsReady = new Promise((r) => { resolveBuildings = r; });
 
   /**
-   * Register the parsed road network. `grid.cells[c]` is an array of segment indices, addressed by
-   * `c = gy * gridW + gx` with `gx = floor((x - xMinC) / cellSize)`. Segment endpoints live in
-   * parallel Float32Arrays and per-segment class lives in segCls. Mirrors the structure already
-   * built inside overlays/roads.js so we can share work.
+   * Register the parsed road network. Flattens the per-cell index arrays into a single Int32Array
+   * with a Uint32Array of cell start offsets so queries become array indexing rather than nested
+   * lookups, and so the whole state can be transferred to a worker.
    */
-  function setRoads({ cells, segAx, segAy, segBx, segBy, segCls, gridW, gridH, cellSize, xMinC, yMinC }) {
-    roads = { cells, segAx, segAy, segBx, segBy, segCls, gridW, gridH, cellSize, xMinC, yMinC };
+  function setRoads(input) {
+    roadsState = flattenRoadCells(input);
     resolveRoads();
   }
 
@@ -64,7 +58,7 @@ export function createPlacementObstacles() {
    * generation does not hang forever waiting for a network that will not arrive.
    */
   function markRoadsEmpty() {
-    if (!roads) resolveRoads();
+    if (!roadsState) resolveRoads();
   }
 
   /**
@@ -73,7 +67,8 @@ export function createPlacementObstacles() {
    */
   function setBuildings({ records, n, gridMetres = 200 }) {
     if (!n) {
-      buildings = { gridW: 0, gridH: 0, cellSize: gridMetres, xMin: 0, yMin: 0, cells: [], records };
+      buildingsState = null;
+      buildingsBlankRecords = records;
       resolveBuildings();
       return;
     }
@@ -108,107 +103,103 @@ export function createPlacementObstacles() {
         }
       }
     }
-    buildings = { gridW, gridH, cellSize, xMin, yMin, cells, records };
+    buildingsState = flattenBuildingCells({ records, n, cells, gridW, gridH, cellSize, xMin, yMin });
     resolveBuildings();
   }
 
   /** Resolve buildingsReady with no buildings — used when buildings.bin fails to load. */
   function markBuildingsEmpty() {
-    if (!buildings) resolveBuildings();
+    if (!buildingsState) resolveBuildings();
   }
 
   /**
-   * True when (x, y) is within roadMargin of any road segment (using its class half-width) or
-   * within buildingMargin of any building's oriented rectangular footprint. Margins are extra
-   * clearance on top of the road half-width / building size — set to 0 for an exact-touch test.
+   * Bridge to the shared pure query module. Wraps the call so external callers continue to use
+   * the same (x, y, roadMargin, buildingMargin) signature without seeing the state object.
    */
   function isBlocked(x, y, roadMargin = 1.5, buildingMargin = 1.5) {
-    if (roads) {
-      const { cells, segAx, segAy, segBx, segBy, segCls, gridW, gridH, cellSize, xMinC, yMinC } = roads;
-      const gxCenter = Math.floor((x - xMinC) / cellSize);
-      const gyCenter = Math.floor((y - yMinC) / cellSize);
-      for (let dy = -1; dy <= 1; dy += 1) {
-        for (let dx = -1; dx <= 1; dx += 1) {
-          const gx = gxCenter + dx;
-          const gy = gyCenter + dy;
-          if (gx < 0 || gy < 0 || gx >= gridW || gy >= gridH) continue;
-          const list = cells[gy * gridW + gx];
-          for (let k = 0; k < list.length; k += 1) {
-            const idx = list[k];
-            const halfW = ROAD_HALF_W[segCls[idx]] + roadMargin;
-            const limit = halfW * halfW;
-            if (distSqPointSeg(x, y, segAx[idx], segAy[idx], segBx[idx], segBy[idx]) <= limit) {
-              return true;
-            }
-          }
-        }
-      }
-    }
-    if (buildings && buildings.cells.length) {
-      const { cells, gridW, gridH, cellSize, xMin, yMin, records } = buildings;
-      const gxCenter = Math.floor((x - xMin) / cellSize);
-      const gyCenter = Math.floor((y - yMin) / cellSize);
-      for (let dy = -1; dy <= 1; dy += 1) {
-        for (let dx = -1; dx <= 1; dx += 1) {
-          const gx = gxCenter + dx;
-          const gy = gyCenter + dy;
-          if (gx < 0 || gy < 0 || gx >= gridW || gy >= gridH) continue;
-          const list = cells[gy * gridW + gx];
-          for (let k = 0; k < list.length; k += 1) {
-            const idx = list[k];
-            const cx = records.cx[idx];
-            const cy = records.cy[idx];
-            const ang = records.angle[idx];
-            const ca = Math.cos(-ang);
-            const sa = Math.sin(-ang);
-            const lx = ca * (x - cx) - sa * (y - cy);
-            const ly = sa * (x - cx) + ca * (y - cy);
-            const halfL = records.length[idx] * 0.5 + buildingMargin;
-            const halfWB = records.width[idx] * 0.5 + buildingMargin;
-            if (Math.abs(lx) <= halfL && Math.abs(ly) <= halfWB) return true;
-          }
-        }
-      }
-    }
-    return false;
+    return isBlockedQuery({ roads: roadsState, buildings: buildingsState }, x, y, roadMargin, buildingMargin);
   }
 
   /**
-   * Fast cheap pre-check: true when at least one road or building exists in the
-   * 3x3 grid neighbourhood around (x, y). Used by forest generation to skip the
-   * per-instance isBlocked() math entirely for the (vast majority of) seeds
-   * sitting in roadless, building-free wilderness. The grid cells (roads: 100 m,
-   * buildings: 200 m) comfortably exceed the K_TREES quad radius (~48 m), so a
-   * negative answer at the seed location guarantees no instance can be blocked.
+   * Fast cheap pre-check: true when at least one road or building exists in the 3x3 grid
+   * neighbourhood around (x, y). Used by forest generation to skip the per-instance isBlocked
+   * math for seeds in obstacle-free wilderness.
    */
   function couldBeBlocked(x, y) {
-    if (roads) {
-      const { cells, gridW, gridH, cellSize, xMinC, yMinC } = roads;
-      const gxCenter = Math.floor((x - xMinC) / cellSize);
-      const gyCenter = Math.floor((y - yMinC) / cellSize);
-      for (let dy = -1; dy <= 1; dy += 1) {
-        for (let dx = -1; dx <= 1; dx += 1) {
-          const gx = gxCenter + dx;
-          const gy = gyCenter + dy;
-          if (gx < 0 || gy < 0 || gx >= gridW || gy >= gridH) continue;
-          if (cells[gy * gridW + gx].length > 0) return true;
-        }
-      }
+    return couldBeBlockedQuery({ roads: roadsState, buildings: buildingsState }, x, y);
+  }
+
+  /**
+   * Clone the obstacle state into a structured-cloneable + transferable snapshot for a Web
+   * Worker. Every typed array is .slice()'d so the resulting buffers can be moved via the
+   * transfer list without detaching the live main-thread copies.
+   */
+  function serializeForWorker() {
+    const out = { roads: null, buildings: null };
+    if (roadsState) {
+      out.roads = {
+        segAx: roadsState.segAx.slice(),
+        segAy: roadsState.segAy.slice(),
+        segBx: roadsState.segBx.slice(),
+        segBy: roadsState.segBy.slice(),
+        segCls: roadsState.segCls.slice(),
+        cellSegIdx: roadsState.cellSegIdx.slice(),
+        cellStarts: roadsState.cellStarts.slice(),
+        gridW: roadsState.gridW,
+        gridH: roadsState.gridH,
+        cellSize: roadsState.cellSize,
+        xMinC: roadsState.xMinC,
+        yMinC: roadsState.yMinC,
+      };
     }
-    if (buildings && buildings.cells.length) {
-      const { cells, gridW, gridH, cellSize, xMin, yMin } = buildings;
-      const gxCenter = Math.floor((x - xMin) / cellSize);
-      const gyCenter = Math.floor((y - yMin) / cellSize);
-      for (let dy = -1; dy <= 1; dy += 1) {
-        for (let dx = -1; dx <= 1; dx += 1) {
-          const gx = gxCenter + dx;
-          const gy = gyCenter + dy;
-          if (gx < 0 || gy < 0 || gx >= gridW || gy >= gridH) continue;
-          if (cells[gy * gridW + gx].length > 0) return true;
-        }
-      }
+    if (buildingsState) {
+      out.buildings = {
+        recCx: buildingsState.recCx.slice(),
+        recCy: buildingsState.recCy.slice(),
+        recAngle: buildingsState.recAngle.slice(),
+        recLength: buildingsState.recLength.slice(),
+        recWidth: buildingsState.recWidth.slice(),
+        cellBldIdx: buildingsState.cellBldIdx.slice(),
+        cellStarts: buildingsState.cellStarts.slice(),
+        gridW: buildingsState.gridW,
+        gridH: buildingsState.gridH,
+        cellSize: buildingsState.cellSize,
+        xMin: buildingsState.xMin,
+        yMin: buildingsState.yMin,
+      };
     }
-    return false;
+    return out;
+  }
+
+  /**
+   * Collects every transferable buffer from a snapshot for use as the postMessage transfer list.
+   * Returns an empty array when the snapshot has no obstacle data (so transfer is a no-op).
+   */
+  function collectTransferables(snapshot) {
+    const transfers = [];
+    if (snapshot.roads) {
+      transfers.push(
+        snapshot.roads.segAx.buffer,
+        snapshot.roads.segAy.buffer,
+        snapshot.roads.segBx.buffer,
+        snapshot.roads.segBy.buffer,
+        snapshot.roads.segCls.buffer,
+        snapshot.roads.cellSegIdx.buffer,
+        snapshot.roads.cellStarts.buffer,
+      );
+    }
+    if (snapshot.buildings) {
+      transfers.push(
+        snapshot.buildings.recCx.buffer,
+        snapshot.buildings.recCy.buffer,
+        snapshot.buildings.recAngle.buffer,
+        snapshot.buildings.recLength.buffer,
+        snapshot.buildings.recWidth.buffer,
+        snapshot.buildings.cellBldIdx.buffer,
+        snapshot.buildings.cellStarts.buffer,
+      );
+    }
+    return transfers;
   }
 
   return {
@@ -220,6 +211,8 @@ export function createPlacementObstacles() {
     markBuildingsEmpty,
     isBlocked,
     couldBeBlocked,
+    serializeForWorker,
+    collectTransferables,
   };
 }
 
@@ -237,5 +230,7 @@ export function createNullObstacles() {
     markBuildingsEmpty() {},
     isBlocked() { return false; },
     couldBeBlocked() { return false; },
+    serializeForWorker() { return { roads: null, buildings: null }; },
+    collectTransferables() { return []; },
   };
 }
