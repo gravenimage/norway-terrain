@@ -7,6 +7,19 @@ import {
   CANOPY_RANGE_INNER_DELTA_METRES,
 } from '../core/constants.js';
 import { computeFadeRange } from '../core/lod-fade.js';
+import { makeBudget, yieldToBrowser } from '../core/yield.js';
+
+const NOW = (typeof performance !== 'undefined' && performance.now)
+  ? () => performance.now()
+  : () => Date.now();
+
+/**
+ * No-op progress tracker used when the system is constructed without one (e.g.
+ * tests). Keeps the loader code free of conditional checks.
+ */
+const NULL_PROGRESS = {
+  start() {}, update() {}, finish() {}, error() {},
+};
 
 export const FOREST_CONTRACT = Object.freeze({
   magic: Object.freeze(['TRE1', 'TRE2']),
@@ -94,7 +107,7 @@ export function parseForestBuffer(buffer) {
  * loadCanopy() are fire-and-forget, and updateForGeology couples forest
  * visibility to geology overlays.
  */
-export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, treeUniforms, canopyUniforms, elevationMax = 14835, obstacles = createNullObstacles() }) {
+export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, treeUniforms, canopyUniforms, elevationMax = 14835, obstacles = createNullObstacles(), progress = NULL_PROGRESS }) {
   void scene;
   const treeCells = [];
   const canopyCells = [];
@@ -132,17 +145,28 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
      * bounds. Initial tree visibility is limited by canopyLodHi.
      */
     async loadTrees() {
+      const phaseTimings = {};
+      const tFetchStart = NOW();
+      progress.start('forest-trees', 'Forest');
+      progress.update('forest-trees', { phase: 'fetching forest.bin' });
       try {
         const [{ makeTreeGeometry }, materials, ab] = await Promise.all([
           import('./geometry-builders.js'),
           import('../rendering/material-factory.js'),
           (await fetch('forest.bin')).arrayBuffer(),
         ]);
+        phaseTimings.fetch = NOW() - tFetchStart;
+        progress.update('forest-trees', { phase: 'waiting for road/building footprints' });
+        const tWaitStart = NOW();
         // Wait for road and building footprints to be ready (or marked empty) so the per-instance
         // cull below sees a complete obstacle map. Tree generation runs once and is non-trivial,
         // so the small extra latency is preferable to leaking trees onto roads / through roofs.
         await Promise.all([obstacles.roadsReady, obstacles.buildingsReady]);
+        phaseTimings.waitObstacles = NOW() - tWaitStart;
+        progress.update('forest-trees', { phase: 'parsing seeds' });
+        const tParseStart = NOW();
         const { n, records, bins } = parseForestBuffer(ab);
+        phaseTimings.parse = NOW() - tParseStart;
         const treeGeom = makeTreeGeometry();
         const treeMaterial = materials.createTreeMaterial(treeUniforms);
         const K_TREES = 16;
@@ -161,7 +185,22 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
         let totalCells = 0;
         let totalInstances = 0;
         let totalCulled = 0;
-        for (const [, idxArr] of bins){
+        let isBlockedNs = 0;        // accumulated ns spent in obstacle queries
+        let isBlockedCalls = 0;
+        let generateNs = 0;          // accumulated ns spent in the per-instance math+writes
+        let meshCreateNs = 0;        // accumulated ns spent in THREE attribute/mesh construction
+        const tGenerateStart = NOW();
+        const binEntries = Array.from(bins.values());
+        const totalBins = binEntries.length;
+        progress.update('forest-trees', { phase: 'generating trees', total: totalBins });
+        // Sub-bin yield budget: very large bins (dense urban-area forest) can otherwise
+        // run for 100+ ms inside a single iteration here. Probe the clock every
+        // YIELD_PROBE_SEEDS seeds and yield mid-bin if the slice budget is exceeded.
+        const SLICE_BUDGET_MS = 8;
+        const YIELD_PROBE_SEEDS = 256;
+        const budget = makeBudget(SLICE_BUDGET_MS);
+        for (let binI = 0; binI < totalBins; binI += 1) {
+          const idxArr = binEntries[binI];
           const m = idxArr.length;
           if (!m) continue;
           const M = m * K_TREES;
@@ -173,6 +212,7 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
           let bxMin = Infinity, byMin = Infinity, bxMax = -Infinity, byMax = -Infinity;
           let maxH = 0;
           let wi = 0;
+          const tBinGenStart = NOW();
           for (let k = 0; k < m; k++){
             const seedIdx = idxArr[k];
             const cx0 = records.cx[seedIdx];
@@ -210,7 +250,11 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
               // Cull trees whose base intersects a road or building footprint. Doing this on the
               // CPU at tree-spawn time avoids the visible "chopped tree" artefact that happens
               // when the fragment shader discards only the parts of a tree over the road.
-              if (obstacles.isBlocked(cx, cy)) { totalCulled++; continue; }
+              const tBlocked = NOW();
+              const blocked = obstacles.isBlocked(cx, cy);
+              isBlockedNs += (NOW() - tBlocked) * 1e6;
+              isBlockedCalls += 1;
+              if (blocked) { totalCulled++; continue; }
               const fu = Math.max(0, Math.min(1, (u2 + offU) + 0.5));
               const fv = Math.max(0, Math.min(1, (v2 + offV) + 0.5));
               const dz = (d00 * (1 - fu) * (1 - fv))
@@ -245,8 +289,20 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
               if (height > maxH) maxH = height;
               wi++;
             }
+            // Yield mid-bin if the slice budget is exceeded. Checked every
+            // YIELD_PROBE_SEEDS seeds so the clock-read cost is amortised.
+            if ((k & (YIELD_PROBE_SEEDS - 1)) === 0 && budget.exceeded()) {
+              generateNs += (NOW() - tBinGenStart) * 1e6;
+              progress.update('forest-trees', { current: binI });
+              await yieldToBrowser();
+              budget.reset();
+              // restart the inner timer so we don't credit the yield itself to generation
+              // (the outer iteration just continues; generateNs accumulates per-slice).
+            }
           }
+          generateNs += (NOW() - tBinGenStart) * 1e6;
           if (wi === 0) continue;
+          const tMeshStart = NOW();
           const cellCx = (bxMin + bxMax) / 2, cellCy = (byMin + byMax) / 2;
           const radius = Math.hypot(bxMax - cellCx, byMax - cellCy) + 30;
 
@@ -273,11 +329,41 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
           totalInstances += wi;
           treeCells.push({ mesh, cx: cellCx, cy: cellCy, radius, maxH, count: m });
           totalCells++;
+          meshCreateNs += (NOW() - tMeshStart) * 1e6;
+          // End-of-bin yield boundary: report progress and yield if the slice budget
+          // is full. Cheap clock probe; usually no-op for small bins.
+          if (budget.exceeded()) {
+            progress.update('forest-trees', { current: binI + 1 });
+            await yieldToBrowser();
+            budget.reset();
+          }
         }
+        phaseTimings.generate = NOW() - tGenerateStart;
+        // ~48 bytes per instance across the 5 attribute arrays (12 floats),
+        // matches the iPos/iSize/iRot/iCanopyA/iCanopyB allocations above.
+        const attrMB = (totalInstances * 48) / (1024 * 1024);
+        const summary = {
+          seeds: n,
+          instances: totalInstances,
+          culled: totalCulled,
+          cells: totalCells,
+          attrMB: Number(attrMB.toFixed(1)),
+          fetchMs: Number(phaseTimings.fetch.toFixed(0)),
+          waitObstaclesMs: Number(phaseTimings.waitObstacles.toFixed(0)),
+          parseMs: Number(phaseTimings.parse.toFixed(0)),
+          generateMs: Number(phaseTimings.generate.toFixed(0)),
+          generateInnerMs: Number((generateNs / 1e6).toFixed(0)),
+          meshCreateMs: Number((meshCreateNs / 1e6).toFixed(0)),
+          isBlockedMs: Number((isBlockedNs / 1e6).toFixed(0)),
+          isBlockedCalls,
+        };
+        console.info('[forest] loadTrees done', summary);
         document.getElementById('hud').insertAdjacentHTML('beforeend',
           `<br>trees: ${totalInstances.toLocaleString()} (×${K_TREES} from ${n.toLocaleString()} seeds, ${totalCulled.toLocaleString()} culled on roads/buildings) in ${totalCells} cells, < ${(canopyLodHi/1000).toFixed(1)} km`);
+        progress.finish('forest-trees');
       } catch (e) {
         console.warn('forest.bin not loaded:', e);
+        progress.error('forest-trees', e && e.message ? e.message : String(e));
       }
     },
     /**
@@ -286,14 +372,26 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
      * cell bounds for LOD/range culling.
      */
     async loadCanopy() {
+      progress.start('forest-canopy', 'Canopy');
+      progress.update('forest-canopy', { phase: 'fetching canopy.bin' });
+      const tFetchStart = NOW();
       try {
         const [materials, ab] = await Promise.all([
           import('../rendering/material-factory.js'),
           (await fetch('canopy.bin')).arrayBuffer(),
         ]);
+        const fetchMs = NOW() - tFetchStart;
+        progress.update('forest-canopy', { phase: 'parsing' });
+        const tParseStart = NOW();
         const canopyMaterial = materials.createCanopyMaterial(canopyUniforms);
         const parsed = parseCanopyBuffer(ab);
-        for (const { kx, ky, cx, cy, czMin, czMax, radius, verts, indices } of parsed.cells){
+        const parseMs = NOW() - tParseStart;
+        const tBuildStart = NOW();
+        const cells = parsed.cells;
+        progress.update('forest-canopy', { phase: 'building cells', total: cells.length });
+        const budget = makeBudget(8);
+        for (let i = 0; i < cells.length; i += 1) {
+          const { kx, ky, cx, cy, czMin, czMax, radius, verts, indices } = cells[i];
           const geom = new THREE.BufferGeometry();
           geom.setAttribute('position', new THREE.BufferAttribute(verts, 3));
           geom.setIndex(new THREE.BufferAttribute(indices, 1));
@@ -302,11 +400,26 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
           mesh.renderOrder = 1;
           canopyGroup.add(mesh);
           canopyCells.push({ mesh, cx, cy, czMin, czMax, radius, kx, ky });
+          if (budget.exceeded() && i + 1 < cells.length) {
+            progress.update('forest-canopy', { current: i + 1 });
+            await yieldToBrowser();
+            budget.reset();
+          }
         }
+        const buildMs = NOW() - tBuildStart;
+        console.info('[forest] loadCanopy done', {
+          cells: parsed.nCells,
+          tris: parsed.totalTris,
+          fetchMs: Number(fetchMs.toFixed(0)),
+          parseMs: Number(parseMs.toFixed(0)),
+          buildMs: Number(buildMs.toFixed(0)),
+        });
         document.getElementById('hud').insertAdjacentHTML('beforeend',
           `<br>canopy: ${parsed.nCells} cells, ${parsed.totalTris.toLocaleString()} tris`);
+        progress.finish('forest-canopy');
       } catch (e) {
         console.warn('canopy.bin not loaded:', e);
+        progress.error('forest-canopy', e && e.message ? e.message : String(e));
       }
     },
     /**

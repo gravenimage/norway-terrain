@@ -46,6 +46,7 @@ import { attachIdentifyHandlers } from './overlays/identify.js';
 import { createRoadSystem } from './overlays/roads.js';
 import { attachControls } from './ui/controls.js';
 import { validateDomIds } from './ui/dom-ids.js';
+import { createProgressTracker } from './ui/progress.js';
 import { createPlacementObstacles } from './services/spatial-index.js';
 import { createRoadTripSystem } from './features/roadtrip.js';
 import { attachRoadTripPanel } from './ui/roadtrip-panel.js';
@@ -165,6 +166,11 @@ async function _initializeViewerImpl({ THREE, MapControls }) {
     canopyLodMidKm: DEFAULT_CANOPY_LOD_KM,
   });
 
+  // Async-loader progress UI. Each loader (forest, canopy, etc.) reports its
+  // own phase + counters here so the user sees what the page is doing during
+  // the multi-second forest generation pass.
+  const progressTracker = createProgressTracker();
+
   
   // ---------- OSM overlay (roads + kommune boundaries) ----------
   const overlayUniforms = {
@@ -279,6 +285,7 @@ async function _initializeViewerImpl({ THREE, MapControls }) {
     canopyUniforms,
     elevationMax: ELEV_MAX,
     obstacles: placementObstacles,
+    progress: progressTracker,
   });
   forestSystem.loadCanopy();
   
