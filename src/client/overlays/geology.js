@@ -160,6 +160,14 @@ export function createGeologySystem({ THREE, geoUniforms, faultsGroup }) {
   }
 
   return {
+    /**
+     * FeatureSystem.load() — fire both raster loads in parallel. Replaces the
+     * paired loadBedrock + loadQuaternary calls; either can still be invoked
+     * individually for tests.
+     */
+    async load() {
+      await Promise.all([this.loadBedrock(), this.loadQuaternary()]);
+    },
     /** Load the BRR1 bedrock raster and assign its texture/palette uniforms. */
     async loadBedrock() {
       const r = await loadGeologyRaster('bedrock_raster.bin', 'bedrock_palette.json', GEOLOGY_RASTER_CONTRACT.bedrockMagic);

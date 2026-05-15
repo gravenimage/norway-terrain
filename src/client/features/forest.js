@@ -113,6 +113,14 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
 
   return {
     /**
+     * FeatureSystem.load() — fire both forest sub-loads in parallel. Replaces
+     * the paired loadTrees + loadCanopy calls; either can still be invoked
+     * individually for tests or partial loading.
+     */
+    async load() {
+      await Promise.all([this.loadTrees(), this.loadCanopy()]);
+    },
+    /**
      * Fire-and-forget loadTrees() for forest.bin: parses TRE1/TRE2 seeds,
      * expands each seed into K_TREES=16 instances over a 48 m quad with a 1.2 m
      * base sink, creates one instanced mesh per 4000 m bin, and records culling

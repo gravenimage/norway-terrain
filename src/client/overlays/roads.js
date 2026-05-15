@@ -311,6 +311,25 @@ export function createRoadSystem({
     setTownsVisible(visible) {
       townsGroup.visible = visible;
     },
+    /**
+     * FeatureSystem.setVisible accepting either a plain boolean (treated as
+     * roads-only visibility) or `{ roads, towns }` so callers can flip both
+     * sub-groups in one statement.
+     */
+    setVisible(arg) {
+      if (typeof arg === 'object' && arg !== null) {
+        if (typeof arg.roads !== 'undefined') {
+          roadUniforms.uRoadShow.value = arg.roads ? 1.0 : 0.0;
+          if (roadsGroup) roadsGroup.visible = !!arg.roads;
+        }
+        if (typeof arg.towns !== 'undefined') {
+          townsGroup.visible = !!arg.towns;
+        }
+      } else {
+        roadUniforms.uRoadShow.value = arg ? 1.0 : 0.0;
+        if (roadsGroup) roadsGroup.visible = !!arg;
+      }
+    },
     /** Set `overlayUniforms.uExag` for town/boundary line vertical exaggeration. */
     setExaggeration(value) {
       overlayUniforms.uExag.value = value;

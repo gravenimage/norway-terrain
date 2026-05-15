@@ -217,8 +217,16 @@ export function createLabelSystem({
   return {
     load,
     update,
+    /**
+     * FeatureSystem.cull(ctx) alias for update(ctx.camera). Standardised method
+     * so the render loop can iterate systems generically without per-system
+     * branches.
+     */
+    cull(ctx) { update(ctx && ctx.camera); },
     setVisible,
     setExag,
+    /** FeatureSystem alias for setExag (standardised method name). */
+    setExaggeration: setExag,
     _internal: { group, getFeatures: () => features, getSprites: () => sprites },
   };
 }
