@@ -44,6 +44,12 @@ import { createPlacementObstacles } from './placement/obstacles.js';
 import { createRoadTripSystem } from './features/roadtrip.js';
 import { attachRoadTripPanel } from './ui/roadtrip-panel.js';
 import { createLabelSystem } from './features/labels.js';
+import {
+  aliasRoadUniforms,
+  createSharedContourUniforms,
+  createSharedGeologyUniforms,
+  createSharedRoadUniforms,
+} from './rendering/uniform-bundles.js';
 
 
 /**
@@ -208,23 +214,7 @@ async function _initializeViewerImpl({ THREE, MapControls }) {
   // are shared by reference into water/canopy/tree materials so those shaders
   // can discard fragments inside the road footprint and stop occluding the
   // painted road.
-  const _dummyRoadGrid = new THREE.DataTexture(new Float32Array([0, 0]), 1, 1, THREE.RGFormat, THREE.FloatType);
-  _dummyRoadGrid.minFilter = THREE.NearestFilter; _dummyRoadGrid.magFilter = THREE.NearestFilter; _dummyRoadGrid.needsUpdate = true;
-  const _dummyRoadRefs = new THREE.DataTexture(new Float32Array([0,0,0,0]), 1, 1, THREE.RGBAFormat, THREE.FloatType);
-  _dummyRoadRefs.minFilter = THREE.NearestFilter; _dummyRoadRefs.magFilter = THREE.NearestFilter; _dummyRoadRefs.needsUpdate = true;
-  const _dummyRoadCls = new THREE.DataTexture(new Uint8Array([0]), 1, 1, THREE.RedFormat, THREE.UnsignedByteType);
-  _dummyRoadCls.minFilter = THREE.NearestFilter; _dummyRoadCls.magFilter = THREE.NearestFilter; _dummyRoadCls.needsUpdate = true;
-  const roadUniforms = {
-    uRoadGrid:      { value: _dummyRoadGrid },
-    uRoadRefs:      { value: _dummyRoadRefs },
-    uRoadCls:       { value: _dummyRoadCls },
-    uRoadOrigin:    { value: new THREE.Vector2(0, 0) },
-    uRoadCell:      { value: 500.0 },
-    uRoadGridDims:  { value: new THREE.Vector2(1, 1) },
-    uRoadRefsDims:  { value: new THREE.Vector2(1, 1) },
-    uRoadShow:      { value: 1.0 },
-    uRoadReady:     { value: 0.0 },
-  };
+  const roadUniforms = createSharedRoadUniforms(THREE);
   
   // ---------- Forest (low-poly conifers / birches at OSM forest cover) ----------
   const treeUniforms = {
@@ -237,15 +227,7 @@ async function _initializeViewerImpl({ THREE, MapControls }) {
     uFadeNear:  { value: 1200 },
     uFadeFar:   { value: 1800 },
     // road-mask references (shared-by-reference) so trees discard road footprints
-    uRoadGrid:      roadUniforms.uRoadGrid,
-    uRoadRefs:      roadUniforms.uRoadRefs,
-    uRoadCls:       roadUniforms.uRoadCls,
-    uRoadOrigin:    roadUniforms.uRoadOrigin,
-    uRoadCell:      roadUniforms.uRoadCell,
-    uRoadGridDims:  roadUniforms.uRoadGridDims,
-    uRoadRefsDims:  roadUniforms.uRoadRefsDims,
-    uRoadShow:      roadUniforms.uRoadShow,
-    uRoadReady:     roadUniforms.uRoadReady,
+    ...aliasRoadUniforms(roadUniforms),
   };
   let CANOPY_LOD_LO = DEFAULT_CANOPY_LOD_KM * 1000 - TREE_CANOPY_FADE_WIDTH_METRES;
   let CANOPY_LOD_HI = DEFAULT_CANOPY_LOD_KM * 1000 + TREE_CANOPY_FADE_WIDTH_METRES;
@@ -263,15 +245,7 @@ async function _initializeViewerImpl({ THREE, MapControls }) {
     uRangeNear: { value: CANOPY_RANGE - 2000 },
     uRangeFar:  { value: CANOPY_RANGE },
     // road-mask references (shared-by-reference) so canopy discards road footprints
-    uRoadGrid:      roadUniforms.uRoadGrid,
-    uRoadRefs:      roadUniforms.uRoadRefs,
-    uRoadCls:       roadUniforms.uRoadCls,
-    uRoadOrigin:    roadUniforms.uRoadOrigin,
-    uRoadCell:      roadUniforms.uRoadCell,
-    uRoadGridDims:  roadUniforms.uRoadGridDims,
-    uRoadRefsDims:  roadUniforms.uRoadRefsDims,
-    uRoadShow:      roadUniforms.uRoadShow,
-    uRoadReady:     roadUniforms.uRoadReady,
+    ...aliasRoadUniforms(roadUniforms),
   };
   const forestSystem = createForestSystem({
     THREE,
@@ -290,15 +264,7 @@ async function _initializeViewerImpl({ THREE, MapControls }) {
     uExag: { value: 1.4 },
     uSun:  { value: SUN.clone() },
     // road-mask references (shared-by-reference) so water discards road footprints
-    uRoadGrid:      roadUniforms.uRoadGrid,
-    uRoadRefs:      roadUniforms.uRoadRefs,
-    uRoadCls:       roadUniforms.uRoadCls,
-    uRoadOrigin:    roadUniforms.uRoadOrigin,
-    uRoadCell:      roadUniforms.uRoadCell,
-    uRoadGridDims:  roadUniforms.uRoadGridDims,
-    uRoadRefsDims:  roadUniforms.uRoadRefsDims,
-    uRoadShow:      roadUniforms.uRoadShow,
-    uRoadReady:     roadUniforms.uRoadReady,
+    ...aliasRoadUniforms(roadUniforms),
   };
   const waterMaterial = createWaterMaterial(waterUniforms);
   const waterSystem = createWaterSystem({ THREE, scene, waterUniforms, waterMaterial });
@@ -316,32 +282,10 @@ async function _initializeViewerImpl({ THREE, MapControls }) {
   // ---------- shader ----------
   // Shared geology overlay uniforms — all terrain materials get these
   // by reference, so toggling a value affects every tile mesh at once.
-  const _dummyGeoTex = new THREE.DataTexture(new Uint8Array([0, 0]), 1, 1, THREE.RGFormat, THREE.UnsignedByteType);
-  _dummyGeoTex.needsUpdate = true;
-  const _dummyPalTex = new THREE.DataTexture(new Uint8Array([0, 0, 0, 255]), 1, 1, THREE.RGBAFormat, THREE.UnsignedByteType);
-  _dummyPalTex.needsUpdate = true;
-  const geoUniforms = {
-    uBedTex:      { value: _dummyGeoTex },
-    uBedPalette:  { value: _dummyPalTex },
-    uBedShow:     { value: 0.0 },
-    uBedPalN:     { value: 1.0 },
-    uQuatTex:     { value: _dummyGeoTex },
-    uQuatPalette: { value: _dummyPalTex },
-    uQuatShow:    { value: 0.0 },
-    uQuatPalN:    { value: 1.0 },
-    uGeoBBox:     { value: new THREE.Vector4(0, 0, 1, 1) },
-    uGeoOpacity:  { value: 0.6 },
-  };
-  
+  const geoUniforms = createSharedGeologyUniforms(THREE);
+
   // Shared contour uniforms — same sharing pattern as geology.
-  const contourUniforms = {
-    uContourShow:      { value: 0.0 },
-    uContourInterval:  { value: 100.0 },
-    uContourBoldEvery: { value: 5.0 },
-    uContourColor:     { value: new THREE.Color(0x2a1a08) },  // thin: dark brown
-    uContourBoldColor: { value: new THREE.Color(0x140803) },  // bold: near-black
-    uContourOpacity:   { value: 0.75 },
-  };
+  const contourUniforms = createSharedContourUniforms(THREE);
   
   /**
    * Creates one terrain material with per-tile uniforms plus shared overlay uniforms by reference. Overlay uniforms are mutated in place elsewhere so every material observes the same geology, contour, and road state.
@@ -379,15 +323,7 @@ async function _initializeViewerImpl({ THREE, MapControls }) {
         uContourBoldColor: contourUniforms.uContourBoldColor,
         uContourOpacity:   contourUniforms.uContourOpacity,
         // road overlay (shared-by-reference):
-        uRoadGrid:      roadUniforms.uRoadGrid,
-        uRoadRefs:      roadUniforms.uRoadRefs,
-        uRoadCls:       roadUniforms.uRoadCls,
-        uRoadOrigin:    roadUniforms.uRoadOrigin,
-        uRoadCell:      roadUniforms.uRoadCell,
-        uRoadGridDims:  roadUniforms.uRoadGridDims,
-        uRoadRefsDims:  roadUniforms.uRoadRefsDims,
-        uRoadShow:      roadUniforms.uRoadShow,
-        uRoadReady:     roadUniforms.uRoadReady,
+        ...aliasRoadUniforms(roadUniforms),
     });
   }
   
