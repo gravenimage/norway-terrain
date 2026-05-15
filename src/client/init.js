@@ -3,15 +3,20 @@
  */
 
 import {
+  BUILDING_FADE_BAND_METRES,
+  BUILDING_FADE_FLOOR_FRACTION,
   CAMERA_STORAGE_KEY,
+  CANOPY_LOD_HALF_BAND_METRES,
+  CANOPY_RANGE_INNER_DELTA_METRES,
   DEFAULT_BUILDING_RANGE_KM,
   DEFAULT_CANOPY_LOD_KM,
   DEFAULT_CANOPY_RANGE_KM,
-  DEFAULT_DRAPE_OFFSET_METRES, // imported for future drape default extraction; no matching JS variable yet
+  DEFAULT_DRAPE_OFFSET_METRES,
   DEFAULT_EXAGGERATION,
   DEFAULT_SEGMENTS,
   DEFAULT_SSE_PX,
   ELEV_MAX as DEFAULT_ELEV_MAX,
+  MIN_CANOPY_LOD_LO_METRES,
   TREE_CANOPY_FADE_WIDTH_METRES,
 } from './core/constants.js';
 import { restoreCamera, saveCamera } from './rendering/camera-persistence.js';
@@ -141,6 +146,22 @@ async function _initializeViewerImpl({ THREE, MapControls }) {
     if (_camSaveTimer) { clearTimeout(_camSaveTimer); _camSaveTimer = 0; }
     _saveCameraNow();
   });
+
+  // ---------- shared application state (single source of truth for UI tunables) ----------
+  // appState is created early so every closure-based getter below can read live
+  // values from it. controls.js binds DOM inputs to these keys; the fan-out
+  // subscriber wired further down is the only place that mutates systems and
+  // uniforms in response to state changes.
+  const appState = createAppState({
+    exag: DEFAULT_EXAGGERATION,
+    ssePx: DEFAULT_SSE_PX,
+    segments: DEFAULT_SEGMENTS,
+    drape: DEFAULT_DRAPE_OFFSET_METRES,
+    buildingRange: DEFAULT_BUILDING_RANGE_KM * 1000,
+    canopyRange: DEFAULT_CANOPY_RANGE_KM * 1000,
+    canopyLodMidKm: DEFAULT_CANOPY_LOD_KM,
+  });
+
   
   // ---------- OSM overlay (roads + kommune boundaries) ----------
   const overlayUniforms = {
@@ -163,7 +184,6 @@ async function _initializeViewerImpl({ THREE, MapControls }) {
     uFadeNear:  { value: 18000 },
     uFadeFar:   { value: 22000 },
   };
-  let BLD_RANGE = DEFAULT_BUILDING_RANGE_KM * 1000;
   const buildingMaterial = createBuildingMaterial(buildingUniforms);
   const buildingSystem = createBuildingSystem({
     THREE,
@@ -229,9 +249,9 @@ async function _initializeViewerImpl({ THREE, MapControls }) {
     // road-mask references (shared-by-reference) so trees discard road footprints
     ...aliasRoadUniforms(roadUniforms),
   };
-  let CANOPY_LOD_LO = DEFAULT_CANOPY_LOD_KM * 1000 - TREE_CANOPY_FADE_WIDTH_METRES;
-  let CANOPY_LOD_HI = DEFAULT_CANOPY_LOD_KM * 1000 + TREE_CANOPY_FADE_WIDTH_METRES;
-  let CANOPY_RANGE  = DEFAULT_CANOPY_RANGE_KM * 1000;
+  const CANOPY_LOD_INITIAL_LO = DEFAULT_CANOPY_LOD_KM * 1000 - TREE_CANOPY_FADE_WIDTH_METRES;
+  const CANOPY_LOD_INITIAL_HI = DEFAULT_CANOPY_LOD_KM * 1000 + TREE_CANOPY_FADE_WIDTH_METRES;
+  const CANOPY_RANGE_INITIAL = DEFAULT_CANOPY_RANGE_KM * 1000;
   
   const canopyUniforms = {
     uExag:      { value: 1.4 },
@@ -240,10 +260,10 @@ async function _initializeViewerImpl({ THREE, MapControls }) {
     uFogNear:   { value: FOG_NEAR },
     uFogFar:    { value: FOG_FAR },
     uFogColor:  { value: FOG_COLOR },
-    uFadeNear:  { value: CANOPY_LOD_LO },
-    uFadeFar:   { value: CANOPY_LOD_HI },
-    uRangeNear: { value: CANOPY_RANGE - 2000 },
-    uRangeFar:  { value: CANOPY_RANGE },
+    uFadeNear:  { value: CANOPY_LOD_INITIAL_LO },
+    uFadeFar:   { value: CANOPY_LOD_INITIAL_HI },
+    uRangeNear: { value: CANOPY_RANGE_INITIAL - CANOPY_RANGE_INNER_DELTA_METRES },
+    uRangeFar:  { value: CANOPY_RANGE_INITIAL },
     // road-mask references (shared-by-reference) so canopy discards road footprints
     ...aliasRoadUniforms(roadUniforms),
   };
@@ -339,8 +359,6 @@ async function _initializeViewerImpl({ THREE, MapControls }) {
   });
   
   // ---------- quadtree LOD ----------
-  let SSE_PX = DEFAULT_SSE_PX;
-  let EXAG = DEFAULT_EXAGGERATION;
   const roadSystem = createRoadSystem({
     THREE,
     scene,
@@ -353,7 +371,7 @@ async function _initializeViewerImpl({ THREE, MapControls }) {
     centerY: CENTER_Y,
     obstacles: placementObstacles,
   });
-  roadSystem.setExaggeration(EXAG);
+  roadSystem.setExaggeration(appState.get('exag'));
   roadSystem.load();
   // ---------------- faults layer (FLT1) -----------------
   // ---------------- geology raster overlay (BRR1 / QRR1) -----------------
@@ -369,7 +387,7 @@ async function _initializeViewerImpl({ THREE, MapControls }) {
     /**
      * Supplies the live exaggeration value so fault geometry follows UI changes without rebuilding the system.
      */
-    getExaggeration: () => EXAG,
+    getExaggeration: () => appState.get('exag'),
   });
   faultSystem.load();
   // ---------------- end faults layer -----------------
@@ -439,11 +457,11 @@ async function _initializeViewerImpl({ THREE, MapControls }) {
     /**
      * Supplies the current height exaggeration during tile evaluation instead of capturing the startup value.
      */
-    getExag: () => EXAG,
+    getExag: () => appState.get('exag'),
     /**
      * Supplies the current screen-space-error threshold so LOD decisions reflect the latest UI setting.
      */
-    getSsePx: () => SSE_PX,
+    getSsePx: () => appState.get('ssePx'),
     initialSeg: SEG,
     initialPlane,
     ELEV_MAX, SUN, FOG_NEAR, FOG_FAR, FOG_COLOR,
@@ -456,86 +474,145 @@ async function _initializeViewerImpl({ THREE, MapControls }) {
   const labelsSystem = createLabelSystem({
     THREE,
     scene,
-    getExag: () => EXAG,
+    getExag: () => appState.get('exag'),
   });
   labelsSystem.load();
 
-  const appState = createAppState({
-    exag: EXAG,
-    ssePx: SSE_PX,
-    seg: SEG,
-    buildingRange: BLD_RANGE,
-    canopyRange: CANOPY_RANGE,
-    canopyLodLo: CANOPY_LOD_LO,
-    canopyLodHi: CANOPY_LOD_HI,
+  // ---------- appState fan-out ----------
+  // Single subscriber that mirrors every appState change into the appropriate
+  // systems and uniforms. controls.js is purely DOM <-> appState; this block
+  // is the only place in the client that translates UI state into rendering
+  // side effects.
+  appState.subscribe(({ name, value }) => {
+    switch (name) {
+      case 'exag': {
+        overlayUniforms.uExag.value = value;
+        buildingUniforms.uExag.value = value;
+        treeUniforms.uExag.value = value;
+        canopyUniforms.uExag.value = value;
+        waterUniforms.uExag.value = value;
+        amenityAreaUniforms.uExag.value = value;
+        amenityPropUniforms.uExag.value = value;
+        roadSystem.setExaggeration(value);
+        buildingSystem.setExaggeration(value);
+        forestSystem.setExaggeration(value);
+        waterSystem.setExaggeration(value);
+        amenitiesSystem.setExaggeration(value);
+        labelsSystem?.setExaggeration?.(value);
+        break;
+      }
+      case 'drape': {
+        roadSystem.setDrapeOffset(value);
+        break;
+      }
+      case 'buildingRange': {
+        buildingSystem.setRange(value);
+        amenityAreaUniforms.uFadeFar.value = value;
+        amenityAreaUniforms.uFadeNear.value = Math.max(
+          value - BUILDING_FADE_BAND_METRES,
+          value * BUILDING_FADE_FLOOR_FRACTION,
+        );
+        break;
+      }
+      case 'canopyRange': {
+        forestSystem.setRange(value);
+        break;
+      }
+      case 'canopyLodMidKm': {
+        const mid = value * 1000;
+        const lodLo = Math.max(MIN_CANOPY_LOD_LO_METRES, mid - CANOPY_LOD_HALF_BAND_METRES);
+        const lodHi = mid + CANOPY_LOD_HALF_BAND_METRES;
+        forestSystem.setLodSwitch(lodLo, lodHi);
+        break;
+      }
+      case 'showRoads': {
+        roadSystem.setRoadsVisible(value);
+        break;
+      }
+      case 'showTowns': {
+        roadSystem.setTownsVisible(value);
+        break;
+      }
+      case 'showBuildings': {
+        buildingSystem.setVisible(value);
+        amenitiesSystem.setVisible(value);
+        break;
+      }
+      case 'showTrees': {
+        forestSystem.setVisible(value);
+        forestSystem.updateForGeology({
+          bedrockVisible: Boolean(geoUniforms.uBedShow.value),
+          quaternaryVisible: Boolean(geoUniforms.uQuatShow.value),
+        });
+        break;
+      }
+      case 'showLabels': {
+        labelsSystem?.setVisible(value);
+        break;
+      }
+      case 'showTileEdges': {
+        terrainMeshPool.setEdgesVisible(value);
+        break;
+      }
+      case 'showBedrock': {
+        geologySystem.setBedrockVisible(value);
+        forestSystem.updateForGeology({
+          bedrockVisible: Boolean(geoUniforms.uBedShow.value),
+          quaternaryVisible: Boolean(geoUniforms.uQuatShow.value),
+        });
+        break;
+      }
+      case 'showQuaternary': {
+        geologySystem.setQuaternaryVisible(value);
+        forestSystem.updateForGeology({
+          bedrockVisible: Boolean(geoUniforms.uBedShow.value),
+          quaternaryVisible: Boolean(geoUniforms.uQuatShow.value),
+        });
+        break;
+      }
+      case 'showFaults': {
+        faultSystem.setVisible(value);
+        break;
+      }
+      case 'geoOpacity': {
+        geologySystem.setOpacity(value);
+        break;
+      }
+      case 'showContours': {
+        contourUniforms.uContourShow.value = value ? 1.0 : 0.0;
+        break;
+      }
+      case 'contourInterval': {
+        contourUniforms.uContourInterval.value = value;
+        break;
+      }
+      case 'contourOpacity': {
+        contourUniforms.uContourOpacity.value = value;
+        break;
+      }
+      default:
+        // ssePx, segments, and any future read-only state need no fan-out:
+        // their consumers read appState.get(name) directly each frame.
+        break;
+    }
   });
-  
+
   attachControls({
     appState,
-    systems: {
-      roads: roadSystem,
-      buildings: buildingSystem,
-      amenities: amenitiesSystem,
-      forest: forestSystem,
-      water: waterSystem,
-      geology: geologySystem,
-      faults: faultSystem,
-      labels: labelsSystem,
-    },
-    uniforms: {
-      overlayUniforms,
-      buildingUniforms,
-      treeUniforms,
-      canopyUniforms,
-      waterUniforms,
-      amenityAreaUniforms,
-      amenityPropUniforms,
-      geoUniforms,
-      contourUniforms,
-    },
     rebuildPlane: terrainLod.rebuildPlane,
-    stateAccessors: {
-      /**
-       * Mirrors UI exaggeration into the render-loop closure so tile evaluation and overlays stay in sync.
-       */
-      setExag(value) { EXAG = value; },
-      /**
-       * Mirrors the terrain LOD screen-space-error threshold into the render-loop closure.
-       */
-      setSsePx(value) { SSE_PX = value; },
-      /**
-       * Mirrors the building visibility range used by the per-frame building updater.
-       */
-      setBuildingRange(value) { BLD_RANGE = value; },
-      /**
-       * Mirrors the canopy far range used by forest culling and fade uniforms.
-       */
-      setCanopyRange(value) { CANOPY_RANGE = value; },
-      /**
-       * Mirrors the lower and upper canopy LOD transition bounds as a pair to preserve the fade band invariant.
-       */
-      setCanopyLod(lo, hi) { CANOPY_LOD_LO = lo; CANOPY_LOD_HI = hi; },
-      /**
-       * Reports the terrain renderer's current segment count after any geometry rebuild.
-       */
-      getSegments() { return terrainLod.getSegments(); },
-      /**
-       * Toggles the per-tile outline overlay on every pooled terrain mesh.
-       */
-      setTileEdgesVisible(value) { terrainMeshPool.setEdgesVisible(value); },
-    },
+    getSegments: () => terrainLod.getSegments(),
   });
   
   addEventListener('resize', viewerScene.resize);
 
   // Road-trip mode (E39 rail-guided camera). Constructed late so it can capture the latest
-  // controls reference and the live EXAG getter; load() is fire-and-forget like other systems.
+  // controls reference and the live exag getter; load() is fire-and-forget like other systems.
   const roadTripSystem = createRoadTripSystem({
     THREE,
     camera,
     controls,
     canvas: document.querySelector('canvas'),
-    getExag: () => EXAG,
+    getExag: () => appState.get('exag'),
   });
   roadTripSystem.attachInput();
   roadTripSystem.load();
@@ -547,7 +624,7 @@ async function _initializeViewerImpl({ THREE, MapControls }) {
     /**
      * Supplies the live building range to the render loop so per-frame culling honours UI changes.
      */
-    getBldRange: () => BLD_RANGE,
+    getBldRange: () => appState.get('buildingRange'),
     tileCache, renderer, scene, compass,
   });
 }

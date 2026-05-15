@@ -12,3 +12,25 @@ export const DEFAULT_BUILDING_RANGE_KM = 22;
 export const DEFAULT_CANOPY_RANGE_KM = 30;
 export const DEFAULT_CANOPY_LOD_KM = 1.5;
 export const TREE_CANOPY_FADE_WIDTH_METRES = 300;
+
+/**
+ * Inner-edge offset for amenity fade. Buildings/amenities reach full opacity
+ * BUILDING_FADE_BAND_METRES short of the visible range, clamped so the band
+ * never collapses past BUILDING_FADE_FLOOR_FRACTION of the range.
+ */
+export const BUILDING_FADE_BAND_METRES = 4000;
+export const BUILDING_FADE_FLOOR_FRACTION = 0.7;
+
+/**
+ * Half-width of the canopy LOD transition around the slider midpoint. The
+ * MIN_CANOPY_LOD_LO_METRES floor keeps the near edge above the camera even
+ * at very small midpoints.
+ */
+export const CANOPY_LOD_HALF_BAND_METRES = 300;
+export const MIN_CANOPY_LOD_LO_METRES = 50;
+
+/**
+ * Canopy fade-near inset relative to the canopy far range, so the band fades
+ * over the last CANOPY_RANGE_INNER_DELTA_METRES of the visible distance.
+ */
+export const CANOPY_RANGE_INNER_DELTA_METRES = 2000;
