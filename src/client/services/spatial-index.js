@@ -173,6 +173,44 @@ export function createPlacementObstacles() {
     return false;
   }
 
+  /**
+   * Fast cheap pre-check: true when at least one road or building exists in the
+   * 3x3 grid neighbourhood around (x, y). Used by forest generation to skip the
+   * per-instance isBlocked() math entirely for the (vast majority of) seeds
+   * sitting in roadless, building-free wilderness. The grid cells (roads: 100 m,
+   * buildings: 200 m) comfortably exceed the K_TREES quad radius (~48 m), so a
+   * negative answer at the seed location guarantees no instance can be blocked.
+   */
+  function couldBeBlocked(x, y) {
+    if (roads) {
+      const { cells, gridW, gridH, cellSize, xMinC, yMinC } = roads;
+      const gxCenter = Math.floor((x - xMinC) / cellSize);
+      const gyCenter = Math.floor((y - yMinC) / cellSize);
+      for (let dy = -1; dy <= 1; dy += 1) {
+        for (let dx = -1; dx <= 1; dx += 1) {
+          const gx = gxCenter + dx;
+          const gy = gyCenter + dy;
+          if (gx < 0 || gy < 0 || gx >= gridW || gy >= gridH) continue;
+          if (cells[gy * gridW + gx].length > 0) return true;
+        }
+      }
+    }
+    if (buildings && buildings.cells.length) {
+      const { cells, gridW, gridH, cellSize, xMin, yMin } = buildings;
+      const gxCenter = Math.floor((x - xMin) / cellSize);
+      const gyCenter = Math.floor((y - yMin) / cellSize);
+      for (let dy = -1; dy <= 1; dy += 1) {
+        for (let dx = -1; dx <= 1; dx += 1) {
+          const gx = gxCenter + dx;
+          const gy = gyCenter + dy;
+          if (gx < 0 || gy < 0 || gx >= gridW || gy >= gridH) continue;
+          if (cells[gy * gridW + gx].length > 0) return true;
+        }
+      }
+    }
+    return false;
+  }
+
   return {
     roadsReady,
     buildingsReady,
@@ -181,6 +219,7 @@ export function createPlacementObstacles() {
     markRoadsEmpty,
     markBuildingsEmpty,
     isBlocked,
+    couldBeBlocked,
   };
 }
 
@@ -197,5 +236,6 @@ export function createNullObstacles() {
     markRoadsEmpty() {},
     markBuildingsEmpty() {},
     isBlocked() { return false; },
+    couldBeBlocked() { return false; },
   };
 }

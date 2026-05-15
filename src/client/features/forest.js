@@ -187,7 +187,7 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
         let totalCulled = 0;
         let isBlockedNs = 0;        // accumulated ns spent in obstacle queries
         let isBlockedCalls = 0;
-        let generateNs = 0;          // accumulated ns spent in the per-instance math+writes
+        let seedsSkipped = 0;        // seeds whose pre-check let us skip per-instance probes
         let meshCreateNs = 0;        // accumulated ns spent in THREE attribute/mesh construction
         const tGenerateStart = NOW();
         const binEntries = Array.from(bins.values());
@@ -212,7 +212,6 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
           let bxMin = Infinity, byMin = Infinity, bxMax = -Infinity, byMax = -Infinity;
           let maxH = 0;
           let wi = 0;
-          const tBinGenStart = NOW();
           for (let k = 0; k < m; k++){
             const seedIdx = idxArr[k];
             const cx0 = records.cx[seedIdx];
@@ -229,6 +228,15 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
             const aspect = TREE_ASPECT[sp] || 0.4;
             const A = TREE_PAL[sp] || TREE_PAL[0];
             const B = TREE_PAL_DARK[sp] || TREE_PAL_DARK[0];
+            // Cheap pre-check at the seed: if no road/building exists in the 3x3 grid
+            // neighbourhood around the seed (roads grid is 100 m, buildings grid 200 m),
+            // none of the K_TREES instances within QUAD_M/2 = 24 m of the seed can be
+            // blocked. Saves ~16 isBlocked calls per seed in the (typical) wilderness case.
+            const tNear = NOW();
+            const seedCouldBlock = obstacles.couldBeBlocked(cx0, cy0);
+            isBlockedNs += (NOW() - tNear) * 1e6;
+            isBlockedCalls += 1;
+            if (!seedCouldBlock) seedsSkipped += 1;
             for (let s = 0; s < K_TREES; s++){
               const sub = K_TREES;
               const nx = Math.ceil(Math.sqrt(sub));
@@ -247,14 +255,16 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
               const offV = jh(seedIdx, 9993) * 0.45;
               const cx = cx0 + (u2 + offU) * QUAD_M;
               const cy = cy0 + (v2 + offV) * QUAD_M;
-              // Cull trees whose base intersects a road or building footprint. Doing this on the
-              // CPU at tree-spawn time avoids the visible "chopped tree" artefact that happens
-              // when the fragment shader discards only the parts of a tree over the road.
-              const tBlocked = NOW();
-              const blocked = obstacles.isBlocked(cx, cy);
-              isBlockedNs += (NOW() - tBlocked) * 1e6;
-              isBlockedCalls += 1;
-              if (blocked) { totalCulled++; continue; }
+              // Only run the full per-instance segment/rectangle math when the seed
+              // pre-check said something could be near. In ~99% of seeds the answer is
+              // "nothing near" and we skip the call entirely.
+              if (seedCouldBlock) {
+                const tBlocked = NOW();
+                const blocked = obstacles.isBlocked(cx, cy);
+                isBlockedNs += (NOW() - tBlocked) * 1e6;
+                isBlockedCalls += 1;
+                if (blocked) { totalCulled++; continue; }
+              }
               const fu = Math.max(0, Math.min(1, (u2 + offU) + 0.5));
               const fv = Math.max(0, Math.min(1, (v2 + offV) + 0.5));
               const dz = (d00 * (1 - fu) * (1 - fv))
@@ -292,15 +302,11 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
             // Yield mid-bin if the slice budget is exceeded. Checked every
             // YIELD_PROBE_SEEDS seeds so the clock-read cost is amortised.
             if ((k & (YIELD_PROBE_SEEDS - 1)) === 0 && budget.exceeded()) {
-              generateNs += (NOW() - tBinGenStart) * 1e6;
               progress.update('forest-trees', { current: binI });
               await yieldToBrowser();
               budget.reset();
-              // restart the inner timer so we don't credit the yield itself to generation
-              // (the outer iteration just continues; generateNs accumulates per-slice).
             }
           }
-          generateNs += (NOW() - tBinGenStart) * 1e6;
           if (wi === 0) continue;
           const tMeshStart = NOW();
           const cellCx = (bxMin + bxMax) / 2, cellCy = (byMin + byMax) / 2;
@@ -352,13 +358,13 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
           waitObstaclesMs: Number(phaseTimings.waitObstacles.toFixed(0)),
           parseMs: Number(phaseTimings.parse.toFixed(0)),
           generateMs: Number(phaseTimings.generate.toFixed(0)),
-          generateInnerMs: Number((generateNs / 1e6).toFixed(0)),
           meshCreateMs: Number((meshCreateNs / 1e6).toFixed(0)),
           isBlockedMs: Number((isBlockedNs / 1e6).toFixed(0)),
           isBlockedCalls,
+          seedsSkippedByPrecheck: seedsSkipped,
         };
         console.info(
-          `[forest] loadTrees done: fetch=${summary.fetchMs}ms wait=${summary.waitObstaclesMs}ms parse=${summary.parseMs}ms generate=${summary.generateMs}ms (innerWork=${summary.generateInnerMs}ms, mesh=${summary.meshCreateMs}ms, isBlocked=${summary.isBlockedMs}ms over ${summary.isBlockedCalls.toLocaleString()} calls) — ${summary.instances.toLocaleString()} instances in ${summary.cells} cells, ${summary.attrMB} MB attrs, ${summary.culled.toLocaleString()} culled`,
+          `[forest] loadTrees done: fetch=${summary.fetchMs}ms wait=${summary.waitObstaclesMs}ms parse=${summary.parseMs}ms generate=${summary.generateMs}ms (mesh=${summary.meshCreateMs}ms, isBlocked=${summary.isBlockedMs}ms over ${summary.isBlockedCalls.toLocaleString()} calls, ${summary.seedsSkippedByPrecheck.toLocaleString()}/${summary.seeds.toLocaleString()} seeds skipped by pre-check) — ${summary.instances.toLocaleString()} instances in ${summary.cells} cells, ${summary.attrMB} MB attrs, ${summary.culled.toLocaleString()} culled`,
           summary,
         );
         document.getElementById('hud').insertAdjacentHTML('beforeend',
