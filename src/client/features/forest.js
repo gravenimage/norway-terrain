@@ -357,7 +357,10 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
           isBlockedMs: Number((isBlockedNs / 1e6).toFixed(0)),
           isBlockedCalls,
         };
-        console.info('[forest] loadTrees done', summary);
+        console.info(
+          `[forest] loadTrees done: fetch=${summary.fetchMs}ms wait=${summary.waitObstaclesMs}ms parse=${summary.parseMs}ms generate=${summary.generateMs}ms (innerWork=${summary.generateInnerMs}ms, mesh=${summary.meshCreateMs}ms, isBlocked=${summary.isBlockedMs}ms over ${summary.isBlockedCalls.toLocaleString()} calls) — ${summary.instances.toLocaleString()} instances in ${summary.cells} cells, ${summary.attrMB} MB attrs, ${summary.culled.toLocaleString()} culled`,
+          summary,
+        );
         document.getElementById('hud').insertAdjacentHTML('beforeend',
           `<br>trees: ${totalInstances.toLocaleString()} (×${K_TREES} from ${n.toLocaleString()} seeds, ${totalCulled.toLocaleString()} culled on roads/buildings) in ${totalCells} cells, < ${(canopyLodHi/1000).toFixed(1)} km`);
         progress.finish('forest-trees');
@@ -407,13 +410,9 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
           }
         }
         const buildMs = NOW() - tBuildStart;
-        console.info('[forest] loadCanopy done', {
-          cells: parsed.nCells,
-          tris: parsed.totalTris,
-          fetchMs: Number(fetchMs.toFixed(0)),
-          parseMs: Number(parseMs.toFixed(0)),
-          buildMs: Number(buildMs.toFixed(0)),
-        });
+        console.info(
+          `[forest] loadCanopy done: fetch=${Number(fetchMs.toFixed(0))}ms parse=${Number(parseMs.toFixed(0))}ms build=${Number(buildMs.toFixed(0))}ms — ${parsed.nCells} cells, ${parsed.totalTris.toLocaleString()} tris`,
+        );
         document.getElementById('hud').insertAdjacentHTML('beforeend',
           `<br>canopy: ${parsed.nCells} cells, ${parsed.totalTris.toLocaleString()} tris`);
         progress.finish('forest-canopy');
