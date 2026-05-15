@@ -3,6 +3,7 @@
  */
 
 import { roadMaskUniformsGLSL, roadMaskFunctionGLSL } from './road-mask-glsl.js';
+import { fogBlendGLSL } from './shared-chunks.js';
 
 /**
  * Vertex shader for canopy surfaces that lifts canopy tops above exaggerated terrain according to elevation band.
@@ -90,8 +91,8 @@ void main(){
   base = mix(base, base*0.80 + vec3(0.07, 0.07, 0.05)*0.20, alt*0.60);
   float NdL = clamp(dot(N, uSun), 0.0, 1.0);
   vec3 col = base * (0.40 + 0.65 * NdL);
-  float fogF = smoothstep(uFogNear, uFogFar, vDist);
-  col = mix(col, uFogColor, fogF);
+  float dist = vDist;
+  ${fogBlendGLSL}
   float aIn  = smoothstep(uFadeNear, uFadeFar, vDist);
   float aOut = 1.0 - smoothstep(uRangeNear, uRangeFar, vDist);
   float alpha = aIn * aOut;

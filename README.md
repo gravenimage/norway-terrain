@@ -156,15 +156,34 @@ adapt. See `SPEC.md` for the full visual / aesthetic specification.
 
 ## Client development
 
-The browser client is split into ES modules under `src/client/` and is bootstrapped by `viewer.html`.
+The browser client is split into ES modules under `src/client/` and is
+bootstrapped by `viewer.html`. See
+[`docs/client-architecture.md`](docs/client-architecture.md) for module
+ownership and the
+[architectural review](docs/client-architecture-review.md) for the active
+refactoring roadmap.
 
-Useful checks:
+### Testing
 
-~~~powershell
-npm run test:client
-npm run test:viewer
-npm run test:viewer:visual
-uv run --with pytest --with numpy --with rasterio --with pyproj --with requests --with shapely --with mapbox-earcut pytest -q
-~~~
+| Command | What it covers |
+| --- | --- |
+| `npm run test:client` | Pure-JS contracts: binary parsers, world transform, road-trip state, label placement. Runs in Node, no browser. |
+| `npm run test:viewer` | Headless Playwright smoke test: loads `viewer.html` against a local server, checks the scene mounts and UI controls exist. |
+| `npm run test:viewer:visual` | Playwright visual regression (`tests-js/viewer-visual.test.mjs`). Compares rendered frames against committed baselines. |
+| `npm run test:python` | Python pipeline tests for tilers, polygon mesh, road network, etc. Uses `uv` so no manual venv is required. |
+| `npm run test` | Runs all three JS suites plus the Python suite. |
 
-Use `docs/client-architecture.md` for module ownership and `docs/client-regression-checklist.md` before merging viewer changes.
+Run [`docs/client-regression-checklist.md`](docs/client-regression-checklist.md)
+manually before merging any change that touches rendering or controls.
+
+### Contributing
+
+1. Branch from `main` (`refactor/<area>` or `feat/<scope>`).
+2. Make the smallest change that addresses one finding; keep commits scoped.
+3. Run `npm run test:client` after each change; `npm run test:viewer` if you
+   touched shaders, materials, or DOM controls.
+4. Follow the architectural conventions documented in
+   [`docs/client-architecture.md`](docs/client-architecture.md): factory
+   functions (`create*`/`attach*`), dynamic `import('./geometry-builders.js')`
+   inside async load methods (keeps modules testable in Node), and shared
+   uniform bundles by reference.

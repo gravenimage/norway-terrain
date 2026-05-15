@@ -1,7 +1,12 @@
 /** @file TRE1/TRE2 forest parser plus stateful tree/canopy scene system. */
 import { readMagic } from '../core/binary.js';
 import { parseCanopyBuffer } from './canopy.js';
-import { createNullObstacles } from '../placement/obstacles.js';
+import { createNullObstacles } from '../services/spatial-index.js';
+import {
+  CANOPY_RANGE_FADE_FLOOR_FRACTION,
+  CANOPY_RANGE_INNER_DELTA_METRES,
+} from '../core/constants.js';
+import { computeFadeRange } from '../core/lod-fade.js';
 
 export const FOREST_CONTRACT = Object.freeze({
   magic: Object.freeze(['TRE1', 'TRE2']),
@@ -112,6 +117,14 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
   }
 
   return {
+    /**
+     * FeatureSystem.load() — fire both forest sub-loads in parallel. Replaces
+     * the paired loadTrees + loadCanopy calls; either can still be invoked
+     * individually for tests or partial loading.
+     */
+    async load() {
+      await Promise.all([this.loadTrees(), this.loadCanopy()]);
+    },
     /**
      * Fire-and-forget loadTrees() for forest.bin: parses TRE1/TRE2 seeds,
      * expands each seed into K_TREES=16 instances over a 48 m quad with a 1.2 m
@@ -348,7 +361,10 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
     setRange(rangeMetres) {
       canopyRange = rangeMetres;
       canopyUniforms.uRangeFar.value  = canopyRange;
-      canopyUniforms.uRangeNear.value = Math.max(canopyRange - 2000, canopyRange * 0.85);
+      canopyUniforms.uRangeNear.value = computeFadeRange(canopyRange, {
+        bandMetres: CANOPY_RANGE_INNER_DELTA_METRES,
+        floorFraction: CANOPY_RANGE_FADE_FLOOR_FRACTION,
+      });
     },
     /**
      * Mutate tree/canopy LOD uniforms in place and update owned thresholds:

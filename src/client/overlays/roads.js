@@ -1,31 +1,9 @@
 /** @file Parses OSM2 road/town overlays and builds road GPU lookup textures. */
 import { assertMagic, concatFloat32 } from '../core/binary.js';
+import { createOverlayLineMaterial } from '../rendering/overlay-line.js';
 
 const TOWN_COLOR = '#7be0c8';
 const ROAD_HALF_W = [6.5, 5.0, 4.0, 3.25, 2.75];
-
-const overlayVert = /* glsl */`
-#include <common>
-#include <logdepthbuf_pars_vertex>
-uniform float uExag;
-uniform float uOffset;
-void main(){
-  vec3 p = position;
-  p.z = max(p.z, 0.0) * uExag + uOffset;
-  gl_Position = projectionMatrix * viewMatrix * vec4(p, 1.0);
-  #include <logdepthbuf_vertex>
-}
-`;
-const overlayFrag = /* glsl */`
-precision highp float;
-#include <common>
-#include <logdepthbuf_pars_fragment>
-uniform vec3 uColor;
-void main(){
-  #include <logdepthbuf_fragment>
-  gl_FragColor = vec4(uColor, 1.0);
-}
-`;
 
 export const ROAD_CONTRACT = Object.freeze({
   magic: 'OSM2',
@@ -121,14 +99,7 @@ export function createRoadSystem({
 
   /** Build a town/boundary line material using shared overlay uniforms plus color. */
   function makeLineMaterial(color) {
-    return new THREE.ShaderMaterial({
-      uniforms: { ...overlayUniforms, uColor: { value: new THREE.Color(color) } },
-      vertexShader: overlayVert,
-      fragmentShader: overlayFrag,
-      transparent: false,
-      depthTest: true,
-      depthWrite: false,
-    });
+    return createOverlayLineMaterial({ THREE, overlayUniforms, color });
   }
 
   /**
@@ -261,8 +232,6 @@ export function createRoadSystem({
     roadUniforms.uRoadRefsDims.value.set(refsTexW, refsTexH);
     roadUniforms.uRoadReady.value = 1.0;
 
-    window.__roadGrid = { gridW, gridH, gridData, maxCellCount, totalRefs, N, cell, xMinC, yMinC };
-
     if (obstacles && typeof obstacles.setRoads === 'function') {
       // Hand the same per-cell segment index lists to the CPU placement obstacle service so it can
       // reject tree spawn points sitting on roads. Reusing `cells` is safe — neither the road
@@ -312,6 +281,25 @@ export function createRoadSystem({
     /** Toggle kommune/town boundary line visibility on the owned towns group. */
     setTownsVisible(visible) {
       townsGroup.visible = visible;
+    },
+    /**
+     * FeatureSystem.setVisible accepting either a plain boolean (treated as
+     * roads-only visibility) or `{ roads, towns }` so callers can flip both
+     * sub-groups in one statement.
+     */
+    setVisible(arg) {
+      if (typeof arg === 'object' && arg !== null) {
+        if (typeof arg.roads !== 'undefined') {
+          roadUniforms.uRoadShow.value = arg.roads ? 1.0 : 0.0;
+          if (roadsGroup) roadsGroup.visible = !!arg.roads;
+        }
+        if (typeof arg.towns !== 'undefined') {
+          townsGroup.visible = !!arg.towns;
+        }
+      } else {
+        roadUniforms.uRoadShow.value = arg ? 1.0 : 0.0;
+        if (roadsGroup) roadsGroup.visible = !!arg;
+      }
     },
     /** Set `overlayUniforms.uExag` for town/boundary line vertical exaggeration. */
     setExaggeration(value) {

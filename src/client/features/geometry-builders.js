@@ -62,7 +62,7 @@ export function makeHouseGeometry(){
 /**
  * Build a colored box BufferGeometry primitive used by amenity prop builders.
  */
-function _propBox(w, l, h, ox, oy, oz, color){
+export function buildColoredBox(w, l, h, ox, oy, oz, color){
   const g = new THREE.BoxGeometry(w, l, h);
   g.translate(ox, oy, oz + h * 0.5);
   const n = g.attributes.position.count;
@@ -74,7 +74,7 @@ function _propBox(w, l, h, ox, oy, oz, color){
 /**
  * Build a colored Z-up cylinder BufferGeometry primitive for amenity props.
  */
-function _propCyl(r, h, ox, oy, oz, color, radial=8){
+export function buildColoredCylinder(r, h, ox, oy, oz, color, radial=8){
   const g = new THREE.CylinderGeometry(r, r, h, radial);
   g.rotateX(Math.PI / 2); // Y-up → Z-up
   g.translate(ox, oy, oz + h * 0.5);
@@ -87,7 +87,7 @@ function _propCyl(r, h, ox, oy, oz, color, radial=8){
 /**
  * Build a colored sphere BufferGeometry primitive for amenity props.
  */
-function _propSphere(r, ox, oy, oz, color){
+export function buildColoredSphere(r, ox, oy, oz, color){
   const g = new THREE.SphereGeometry(r, 8, 6);
   g.translate(ox, oy, oz);
   const n = g.attributes.position.count;
@@ -96,6 +96,11 @@ function _propSphere(r, ox, oy, oz, color){
   g.setAttribute('color', new THREE.BufferAttribute(c, 3));
   return g;
 }
+
+// Back-compat aliases for the internal builders in this file.
+const _propBox = buildColoredBox;
+const _propCyl = buildColoredCylinder;
+const _propSphere = buildColoredSphere;
 
 const _WOOD = [0.55, 0.35, 0.20];
 const _DARK = [0.28, 0.18, 0.10];

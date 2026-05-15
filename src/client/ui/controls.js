@@ -1,206 +1,115 @@
 /**
- * @file Owns wiring between DOM controls, observable UI state, rendering systems, and shared uniforms. Handlers mutate shared references in place so already-created materials and systems observe control changes immediately.
+ * @file Owns the bidirectional DOM <-> appState binding for viewer controls. Handlers translate DOM input events into appState mutations, and a single appState subscription updates display labels. Side effects on rendering systems and uniforms live in init.js so this file has no dependency on Three.js or feature systems.
  */
+
+import {
+  CHECKBOX_IDS,
+  DISPLAY_IDS,
+  OTHER_IDS,
+  SLIDER_IDS,
+} from './dom-ids.js';
 
 /**
- * Attaches viewer controls to shared systems and uniforms without owning those dependencies. The appState and stateAccessors bridge UI inputs to outer viewer variables, while systems/uniforms are shared references that this module mutates in place.
+ * Attaches sliders, checkboxes, and dropdowns to appState. Every input maps to a named appState entry; init.js owns the fan-out from those entries to systems and uniforms. The optional rebuildPlane callback is the one piece of geometry-side work tied to the segment slider, kept here because it must run before the display label reflects the new segment count.
  */
-export function attachControls({ appState, systems, uniforms, rebuildPlane, stateAccessors = {} }) {
-  const exagEl = document.getElementById('exag');
+export function attachControls({ appState, rebuildPlane, getSegments }) {
   /**
-   * Records exaggeration in app state first so all subscribers see the same value and ordering.
+   * Wires a slider input to an appState key, optionally transforming the raw
+   * numeric value before storing it.
    */
-  exagEl.oninput = () => {
-    appState.set('exag', Number(exagEl.value));
+  function bindSlider(elementId, stateKey, transform = (n) => n) {
+    const el = document.getElementById(elementId);
+    if (!el) return;
+    el.oninput = () => {
+      appState.set(stateKey, transform(Number(el.value)));
+    };
+  }
+
+  /**
+   * Wires a checkbox input to an appState key, storing the boolean directly.
+   */
+  function bindCheckbox(elementId, stateKey) {
+    const el = document.getElementById(elementId);
+    if (!el) return;
+    el.onchange = (event) => {
+      appState.set(stateKey, event.target.checked);
+    };
+  }
+
+  bindSlider(SLIDER_IDS.exag, 'exag');
+  bindSlider(SLIDER_IDS.sse, 'ssePx');
+  bindSlider(SLIDER_IDS.drape, 'drape');
+  bindSlider(SLIDER_IDS.bldRange, 'buildingRange', (km) => km * 1000);
+  bindSlider(SLIDER_IDS.canopyRange, 'canopyRange', (km) => km * 1000);
+  bindSlider(SLIDER_IDS.canopyLod, 'canopyLodMidKm');
+  bindSlider(SLIDER_IDS.geoBlend, 'geoOpacity');
+  bindSlider(SLIDER_IDS.contourOpacity, 'contourOpacity');
+
+  bindCheckbox(CHECKBOX_IDS.showRoads, 'showRoads');
+  bindCheckbox(CHECKBOX_IDS.showTowns, 'showTowns');
+  bindCheckbox(CHECKBOX_IDS.showBuildings, 'showBuildings');
+  bindCheckbox(CHECKBOX_IDS.showTrees, 'showTrees');
+  bindCheckbox(CHECKBOX_IDS.showLabels, 'showLabels');
+  bindCheckbox(CHECKBOX_IDS.showTileEdges, 'showTileEdges');
+  bindCheckbox(CHECKBOX_IDS.showBedrock, 'showBedrock');
+  bindCheckbox(CHECKBOX_IDS.showQuaternary, 'showQuaternary');
+  bindCheckbox(CHECKBOX_IDS.showFaults, 'showFaults');
+  bindCheckbox(CHECKBOX_IDS.showContours, 'showContours');
+
+  const segEl = document.getElementById(SLIDER_IDS.seg);
+  /**
+   * Segment density is the one slider whose displayed value comes from the
+   * renderer (post-rebuild) rather than the raw input, so it is handled
+   * separately from bindSlider.
+   */
+  if (segEl) {
+    segEl.oninput = () => {
+      const value = Number(segEl.value);
+      rebuildPlane(value);
+      const actual = getSegments?.() ?? value;
+      appState.set('segments', actual);
+    };
+  }
+
+  const intervalEl = document.getElementById(OTHER_IDS.contourInterval);
+  if (intervalEl) {
+    intervalEl.onchange = (event) => {
+      appState.set('contourInterval', parseFloat(event.target.value));
+    };
+  }
+
+  /**
+   * Display-label updates are the inverse direction of the binding: every
+   * appState change can refresh the matching <span> so the UI stays
+   * consistent regardless of which subsystem mutated state.
+   */
+  const labelMap = {
+    exag: [DISPLAY_IDS.exag, (v) => v.toFixed(2)],
+    ssePx: [DISPLAY_IDS.sse, (v) => v.toFixed(1)],
+    segments: [DISPLAY_IDS.seg, (v) => String(v)],
+    drape: [DISPLAY_IDS.drape, (v) => String(v)],
+    buildingRange: [DISPLAY_IDS.bldRange, (v) => String(Math.round(v / 1000))],
+    canopyRange: [DISPLAY_IDS.canopyRange, (v) => String(Math.round(v / 1000))],
+    canopyLodMidKm: [DISPLAY_IDS.canopyLod, (v) => String(v)],
+    geoOpacity: [DISPLAY_IDS.geoBlend, (v) => v.toFixed(2)],
+    contourOpacity: [DISPLAY_IDS.contourOpacity, (v) => v.toFixed(2)],
   };
 
   /**
-   * Fans exaggeration changes out to every system and uniform that interprets terrain height.
+   * Initialise display labels from the current appState snapshot so the
+   * panel reads correctly on first paint, before any user interaction.
    */
+  const initial = appState.snapshot();
+  for (const [key, [elementId, format]] of Object.entries(labelMap)) {
+    if (initial[key] === undefined) continue;
+    const el = document.getElementById(elementId);
+    if (el) el.textContent = format(initial[key]);
+  }
+
   appState.subscribe(({ name, value }) => {
-    if (name === 'exag') {
-      stateAccessors.setExag?.(value);
-      document.getElementById('exagv').textContent = value.toFixed(2);
-      uniforms.overlayUniforms.uExag.value = value;
-      uniforms.buildingUniforms.uExag.value = value;
-      uniforms.treeUniforms.uExag.value = value;
-      uniforms.canopyUniforms.uExag.value = value;
-      uniforms.waterUniforms.uExag.value = value;
-      uniforms.amenityAreaUniforms.uExag.value = value;
-      uniforms.amenityPropUniforms.uExag.value = value;
-      systems.roads.setExaggeration(value);
-      systems.buildings.setExaggeration(value);
-      systems.forest.setExaggeration(value);
-      systems.water.setExaggeration(value);
-      systems.amenities.setExaggeration(value);
-      systems.labels?.setExag(value);
-    }
-  });
-
-  const sseEl = document.getElementById('sse');
-  /**
-   * Updates the screen-space-error budget used by the terrain LOD renderer on the next frame.
-   */
-  sseEl.oninput = () => {
-    const value = Number(sseEl.value);
-    stateAccessors.setSsePx?.(value);
-    document.getElementById('ssev').textContent = value.toFixed(1);
-  };
-
-  const segEl = document.getElementById('seg');
-  /**
-   * Rebuilds shared terrain geometry when mesh density changes, preserving the renderer-owned segment count as display truth.
-   */
-  segEl.oninput = () => {
-    const value = Number(segEl.value);
-    rebuildPlane(value);
-    document.getElementById('segv').textContent = String(stateAccessors.getSegments?.() ?? value);
-  };
-
-  document.getElementById('showRoads').onchange = (event) => {
-    systems.roads.setRoadsVisible(event.target.checked);
-  };
-  document.getElementById('showTowns').onchange = (event) => {
-    systems.roads.setTownsVisible(event.target.checked);
-  };
-  /**
-   * Keeps building and amenity visibility coupled because the UI presents them as one built-environment layer.
-   */
-  document.getElementById('showBld').onchange = (event) => {
-    systems.buildings.setVisible(event.target.checked);
-    systems.amenities.setVisible(event.target.checked);
-  };
-  /**
-   * Toggles forest rendering and immediately reapplies geology interaction rules so overlay visibility remains authoritative.
-   */
-  document.getElementById('showTrees').onchange = (event) => {
-    systems.forest.setVisible(event.target.checked);
-    systems.forest.updateForGeology({
-      bedrockVisible: Boolean(uniforms.geoUniforms.uBedShow.value),
-      quaternaryVisible: Boolean(uniforms.geoUniforms.uQuatShow.value),
-    });
-  };
-
-  /**
-   * Toggles the named-feature labels (towns / peaks / hills / lakes).
-   */
-  const labelsEl = document.getElementById('showLabels');
-  if (labelsEl) {
-    labelsEl.onchange = (event) => {
-      systems.labels?.setVisible(event.target.checked);
-    };
-  }
-
-  /**
-   * Toggles the tile-edge debug outlines that trace each rendered terrain mesh perimeter.
-   */
-  const tileEdgesEl = document.getElementById('showTileEdges');
-  if (tileEdgesEl) {
-    tileEdgesEl.onchange = (event) => {
-      stateAccessors.setTileEdgesVisible?.(event.target.checked);
-    };
-  }
-
-  const drapeEl = document.getElementById('drape');
-  /**
-   * Adjusts the road drape lift in metres so overlays can stay visible above exaggerated terrain.
-   */
-  drapeEl.oninput = () => {
-    systems.roads.setDrapeOffset(Number(drapeEl.value));
-    document.getElementById('drapev').textContent = drapeEl.value;
-  };
-
-  const bldRangeEl = document.getElementById('bldRange');
-  /**
-   * Applies the building range to both meshes and amenity fade uniforms, preserving their shared distance control.
-   */
-  bldRangeEl.oninput = () => {
-    const rangeMetres = Number(bldRangeEl.value) * 1000;
-    stateAccessors.setBuildingRange?.(rangeMetres);
-    document.getElementById('bldRangev').textContent = bldRangeEl.value;
-    systems.buildings.setRange(rangeMetres);
-    uniforms.amenityAreaUniforms.uFadeFar.value = rangeMetres;
-    uniforms.amenityAreaUniforms.uFadeNear.value = Math.max(rangeMetres - 4000, rangeMetres * 0.7);
-  };
-
-  const canopyRangeEl = document.getElementById('canopyRange');
-  /**
-   * Updates the far canopy range in metres while keeping forest range state in the owning viewer scope.
-   */
-  canopyRangeEl.oninput = () => {
-    const rangeMetres = Number(canopyRangeEl.value) * 1000;
-    stateAccessors.setCanopyRange?.(rangeMetres);
-    document.getElementById('canopyRangev').textContent = canopyRangeEl.value;
-    systems.forest.setRange(rangeMetres);
-  };
-
-  const canopyLodEl = document.getElementById('canopyLod');
-  /**
-   * Converts the canopy LOD midpoint into a fixed transition band so tree and canopy layers cross-fade consistently.
-   */
-  canopyLodEl.oninput = () => {
-    const mid = Number(canopyLodEl.value) * 1000;
-    const lodLo = Math.max(50, mid - 300);
-    const lodHi = mid + 300;
-    stateAccessors.setCanopyLod?.(lodLo, lodHi);
-    document.getElementById('canopyLodv').textContent = canopyLodEl.value;
-    systems.forest.setLodSwitch(lodLo, lodHi);
-  };
-
-  /**
-   * Reconciles forest visibility against geology overlays, which may suppress trees to keep raster colours legible.
-   */
-  function updateForestVsGeology() {
-    systems.forest.updateForGeology({
-      bedrockVisible: Boolean(uniforms.geoUniforms.uBedShow.value),
-      quaternaryVisible: Boolean(uniforms.geoUniforms.uQuatShow.value),
-    });
-  }
-
-  /**
-   * Shows or hides bedrock while rechecking dependent forest visibility in the same UI transaction.
-   */
-  document.getElementById('cb-bedrock').addEventListener('change', (event) => {
-    systems.geology.setBedrockVisible(event.target.checked);
-    updateForestVsGeology();
-  });
-  /**
-   * Shows or hides quaternary geology while rechecking dependent forest visibility in the same UI transaction.
-   */
-  document.getElementById('cb-quat').addEventListener('change', (event) => {
-    systems.geology.setQuaternaryVisible(event.target.checked);
-    updateForestVsGeology();
-  });
-  document.getElementById('cb-faults').addEventListener('change', (event) => {
-    systems.faults.setVisible(event.target.checked);
-  });
-
-  const blendInput = document.getElementById('r-geo-blend');
-  const blendVal = document.getElementById('r-geo-blend-val');
-  /**
-   * Mutates geology opacity uniforms in place so all terrain materials blend overlays without material rebuilds.
-   */
-  blendInput.addEventListener('input', (event) => {
-    const value = parseFloat(event.target.value);
-    systems.geology.setOpacity(value);
-    blendVal.textContent = value.toFixed(2);
-  });
-
-  document.getElementById('cb-contours').addEventListener('change', (event) => {
-    uniforms.contourUniforms.uContourShow.value = event.target.checked ? 1.0 : 0.0;
-  });
-  document.getElementById('contour-interval').addEventListener('change', (event) => {
-    uniforms.contourUniforms.uContourInterval.value = parseFloat(event.target.value);
-  });
-
-  const contourOpEl = document.getElementById('r-contour-opacity');
-  const contourOpVal = document.getElementById('r-contour-opacity-val');
-  /**
-   * Adjusts contour opacity through shared uniforms so contour styling updates across existing tiles.
-   */
-  contourOpEl.addEventListener('input', (event) => {
-    const value = parseFloat(event.target.value);
-    uniforms.contourUniforms.uContourOpacity.value = value;
-    contourOpVal.textContent = value.toFixed(2);
+    const entry = labelMap[name];
+    if (!entry) return;
+    const el = document.getElementById(entry[0]);
+    if (el) el.textContent = entry[1](value);
   });
 }

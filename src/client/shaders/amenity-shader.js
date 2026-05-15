@@ -2,6 +2,8 @@
  * @file Shader string templates for colored amenity areas and props with toon lighting, fog, and distance fade.
  */
 
+import { fogFadeUniformsGLSL, sunWrapLightingGLSL, fogBlendGLSL, distanceFadeAlphaGLSL } from './shared-chunks.js';
+
 /**
  * Vertex shader for amenity area surfaces that lifts colored polygons just above terrain.
  * Expects aColor attributes plus uExag and uExtraLift uniforms, and passes world position and normals to the fragment stage.
@@ -36,20 +38,16 @@ export const areaFragmentShader = String.raw`
     varying vec3 vNormal;
     varying vec3 vColor;
     varying vec3 vWorld;
-    uniform vec3 uSun;
-    uniform vec3 uFogColor;
-    uniform float uFogNear, uFogFar;
-    uniform float uFadeNear, uFadeFar;
+    ${fogFadeUniformsGLSL}
     void main(){
       #include <logdepthbuf_fragment>
       vec3 N = normalize(vNormal);
       float diff = clamp(dot(N, normalize(uSun)), 0.0, 1.0);
-      float wrap = 0.55 + 0.55 * diff;
+      ${sunWrapLightingGLSL({ low: 0.55, span: 0.55 })}
       vec3 col = vColor * wrap;
       float dist = length(vWorld - cameraPosition);
-      float fogF = smoothstep(uFogNear, uFogFar, dist);
-      col = mix(col, uFogColor, fogF);
-      float alpha = 1.0 - smoothstep(uFadeNear, uFadeFar, dist);
+      ${fogBlendGLSL}
+      ${distanceFadeAlphaGLSL}
       if (alpha < 0.01) discard;
       gl_FragColor = vec4(col, alpha);
     }`;
@@ -107,9 +105,8 @@ export const propFragmentShader = String.raw`
       float band = d > 0.65 ? 1.0 : (d > 0.30 ? 0.78 : 0.55);
       vec3 col = vColor * band;
       float dist = length(vWorld - cameraPosition);
-      float fogF = smoothstep(uFogNear, uFogFar, dist);
-      col = mix(col, uFogColor, fogF);
-      float alpha = 1.0 - smoothstep(uFadeNear, uFadeFar, dist);
+      ${fogBlendGLSL}
+      ${distanceFadeAlphaGLSL}
       if (alpha < 0.01) discard;
       gl_FragColor = vec4(col, alpha);
     }`;

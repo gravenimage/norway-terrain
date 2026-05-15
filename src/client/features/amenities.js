@@ -86,43 +86,14 @@ export function parseAmenitiesBuffer(buffer) {
  * geometry construction; meshes and materials are owned by createAmenitiesSystem.
  */
 function createPropBuilders(THREE, mergeGeometries, baseBuilders) {
-  /**
-   * Build a colored box BufferGeometry primitive for local amenity props.
-   */
-  function _propBox(w, l, h, ox, oy, oz, color){
-    const g = new THREE.BoxGeometry(w, l, h);
-    g.translate(ox, oy, oz + h * 0.5);
-    const n = g.attributes.position.count;
-    const c = new Float32Array(n * 3);
-    for (let i = 0; i < n; i++){ c[i*3]=color[0]; c[i*3+1]=color[1]; c[i*3+2]=color[2]; }
-    g.setAttribute('color', new THREE.BufferAttribute(c, 3));
-    return g;
-  }
-  /**
-   * Build a colored Z-up cylinder BufferGeometry primitive for local props.
-   */
-  function _propCyl(r, h, ox, oy, oz, color, radial=8){
-    const g = new THREE.CylinderGeometry(r, r, h, radial);
-    g.rotateX(Math.PI / 2);
-    g.translate(ox, oy, oz + h * 0.5);
-    const n = g.attributes.position.count;
-    const c = new Float32Array(n * 3);
-    for (let i = 0; i < n; i++){ c[i*3]=color[0]; c[i*3+1]=color[1]; c[i*3+2]=color[2]; }
-    g.setAttribute('color', new THREE.BufferAttribute(c, 3));
-    return g;
-  }
-  /**
-   * Build a colored sphere BufferGeometry primitive for local prop builders.
-   */
-  function _propSphere(r, ox, oy, oz, color){
-    const g = new THREE.SphereGeometry(r, 8, 6);
-    g.translate(ox, oy, oz);
-    const n = g.attributes.position.count;
-    const c = new Float32Array(n * 3);
-    for (let i = 0; i < n; i++){ c[i*3]=color[0]; c[i*3+1]=color[1]; c[i*3+2]=color[2]; }
-    g.setAttribute('color', new THREE.BufferAttribute(c, 3));
-    return g;
-  }
+  // Prop primitive helpers come from geometry-builders.js (passed in as
+  // baseBuilders) so amenities does not duplicate the colored-primitive code.
+  // THREE is accepted for API symmetry; baseBuilders.buildColored* close over
+  // their own THREE module reference via the geometry-builders.js import.
+  void THREE;
+  const _propBox = baseBuilders.buildColoredBox;
+  const _propCyl = baseBuilders.buildColoredCylinder;
+  const _propSphere = baseBuilders.buildColoredSphere;
   /**
    * Build the shelter prop geometry consumed by amenity point instancing.
    */

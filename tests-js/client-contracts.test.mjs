@@ -123,6 +123,7 @@ test('road system exposes stateful overlay API and mutates shared uniforms and g
     'setExaggeration',
     'setRoadsVisible',
     'setTownsVisible',
+    'setVisible',
   ]);
   system.setRoadsVisible(false);
   system.setTownsVisible(false);
@@ -207,6 +208,7 @@ test('forest system exposes stateful API and coordinates tree and canopy visibil
 
   assert.deepEqual(Object.keys(system).sort(), [
     'cull',
+    'load',
     'loadCanopy',
     'loadTrees',
     'setExaggeration',
@@ -252,6 +254,7 @@ test('geology system exposes stateful overlay API and mutates shared uniforms', 
   const system = createGeologySystem({ THREE: {}, geoUniforms, faultsGroup: { visible: false } });
 
   assert.deepEqual(Object.keys(system).sort(), [
+    'load',
     'loadBedrock',
     'loadQuaternary',
     'sampleAt',
