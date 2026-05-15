@@ -46,7 +46,7 @@ import { attachIdentifyHandlers } from './overlays/identify.js';
 import { createRoadSystem } from './overlays/roads.js';
 import { attachControls } from './ui/controls.js';
 import { validateDomIds } from './ui/dom-ids.js';
-import { createPlacementObstacles } from './placement/obstacles.js';
+import { createPlacementObstacles } from './services/spatial-index.js';
 import { createRoadTripSystem } from './features/roadtrip.js';
 import { attachRoadTripPanel } from './ui/roadtrip-panel.js';
 import { createLabelSystem } from './features/labels.js';

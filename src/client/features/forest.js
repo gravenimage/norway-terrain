@@ -1,7 +1,7 @@
 /** @file TRE1/TRE2 forest parser plus stateful tree/canopy scene system. */
 import { readMagic } from '../core/binary.js';
 import { parseCanopyBuffer } from './canopy.js';
-import { createNullObstacles } from '../placement/obstacles.js';
+import { createNullObstacles } from '../services/spatial-index.js';
 
 export const FOREST_CONTRACT = Object.freeze({
   magic: Object.freeze(['TRE1', 'TRE2']),
