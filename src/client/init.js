@@ -287,7 +287,12 @@ async function _initializeViewerImpl({ THREE, MapControls }) {
     obstacles: placementObstacles,
     progress: progressTracker,
   });
-  forestSystem.loadCanopy();
+  // Sequence the two big forest fetches: canopy.bin (~8 MB) is small but was
+  // observed taking 30+ s in dev when forest.bin (~94 MB) was fetched in
+  // parallel and saturated the connection. Loading canopy first lets it land
+  // in seconds; the user sees forest LOD almost immediately, and forest.bin
+  // then gets the full pipe to itself.
+  forestSystem.loadCanopy().then(() => forestSystem.loadTrees());
   
   // ---------------- inland water bodies ----------------
   const waterUniforms = {
@@ -299,7 +304,6 @@ async function _initializeViewerImpl({ THREE, MapControls }) {
   const waterMaterial = createWaterMaterial(waterUniforms);
   const waterSystem = createWaterSystem({ THREE, scene, waterUniforms, waterMaterial });
   waterSystem.load();
-  forestSystem.loadTrees();
   // ---------------- end inland water -----------------
   
   
