@@ -50,6 +50,7 @@ import { createPlacementObstacles } from './services/spatial-index.js';
 import { createRoadTripSystem } from './features/roadtrip.js';
 import { attachRoadTripPanel } from './ui/roadtrip-panel.js';
 import { createLabelSystem } from './features/labels.js';
+import { computeFadeRange } from './core/lod-fade.js';
 import {
   aliasRoadUniforms,
   createSharedContourUniforms,
@@ -510,10 +511,10 @@ async function _initializeViewerImpl({ THREE, MapControls }) {
       case 'buildingRange': {
         buildingSystem.setRange(value);
         amenityAreaUniforms.uFadeFar.value = value;
-        amenityAreaUniforms.uFadeNear.value = Math.max(
-          value - BUILDING_FADE_BAND_METRES,
-          value * BUILDING_FADE_FLOOR_FRACTION,
-        );
+        amenityAreaUniforms.uFadeNear.value = computeFadeRange(value, {
+          bandMetres: BUILDING_FADE_BAND_METRES,
+          floorFraction: BUILDING_FADE_FLOOR_FRACTION,
+        });
         break;
       }
       case 'canopyRange': {

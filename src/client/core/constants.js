@@ -31,6 +31,8 @@ export const MIN_CANOPY_LOD_LO_METRES = 50;
 
 /**
  * Canopy fade-near inset relative to the canopy far range, so the band fades
- * over the last CANOPY_RANGE_INNER_DELTA_METRES of the visible distance.
+ * over the last CANOPY_RANGE_INNER_DELTA_METRES of the visible distance, but
+ * never collapses past CANOPY_RANGE_FADE_FLOOR_FRACTION of the far range.
  */
 export const CANOPY_RANGE_INNER_DELTA_METRES = 2000;
+export const CANOPY_RANGE_FADE_FLOOR_FRACTION = 0.85;

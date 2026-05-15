@@ -1,5 +1,7 @@
 /** @file BLD1 building parser and stateful instanced building scene system. */
 import { assertMagic } from '../core/binary.js';
+import { BUILDING_FADE_BAND_METRES, BUILDING_FADE_FLOOR_FRACTION } from '../core/constants.js';
+import { computeFadeRange } from '../core/lod-fade.js';
 
 export const BUILDING_CONTRACT = Object.freeze({
   magic: 'BLD1',
@@ -207,7 +209,10 @@ export function createBuildingSystem({ THREE, scene, buildingsGroup, buildingUni
      */
     setRange(rangeMetres) {
       buildingUniforms.uFadeFar.value = rangeMetres;
-      buildingUniforms.uFadeNear.value = Math.max(rangeMetres - 4000, rangeMetres * 0.7);
+      buildingUniforms.uFadeNear.value = computeFadeRange(rangeMetres, {
+        bandMetres: BUILDING_FADE_BAND_METRES,
+        floorFraction: BUILDING_FADE_FLOOR_FRACTION,
+      });
     },
     /**
      * Mutate the shared building exaggeration uniform in place for all building
