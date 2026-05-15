@@ -261,8 +261,6 @@ export function createRoadSystem({
     roadUniforms.uRoadRefsDims.value.set(refsTexW, refsTexH);
     roadUniforms.uRoadReady.value = 1.0;
 
-    window.__roadGrid = { gridW, gridH, gridData, maxCellCount, totalRefs, N, cell, xMinC, yMinC };
-
     if (obstacles && typeof obstacles.setRoads === 'function') {
       // Hand the same per-cell segment index lists to the CPU placement obstacle service so it can
       // reject tree spawn points sitting on roads. Reusing `cells` is safe — neither the road

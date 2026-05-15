@@ -108,6 +108,9 @@ async function _initializeViewerImpl({ THREE, MapControls }) {
   } = groups;
   const { near: FOG_NEAR, far: FOG_FAR, color: FOG_COLOR } = viewerScene.fog;
   const SUN = viewerScene.sun;
+  // Dev-only debug handle: exposes the live scene graph to the browser console
+  // and to e2e tests. Not part of any public API — do not depend on it from
+  // production code paths.
   window.__viewer = { camera, controls, renderer, scene };
   
   // ---------- persist camera + target across reloads ----------
@@ -128,7 +131,10 @@ async function _initializeViewerImpl({ THREE, MapControls }) {
     if (_camSaveTimer) return;
     _camSaveTimer = setTimeout(() => { _camSaveTimer = 0; _saveCameraNow(); }, 250);
   });
-  addEventListener('beforeunload', _saveCameraNow);
+  addEventListener('beforeunload', () => {
+    if (_camSaveTimer) { clearTimeout(_camSaveTimer); _camSaveTimer = 0; }
+    _saveCameraNow();
+  });
   
   // ---------- OSM overlay (roads + kommune boundaries) ----------
   const overlayUniforms = {
