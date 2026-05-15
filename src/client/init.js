@@ -47,10 +47,43 @@ import { createLabelSystem } from './features/labels.js';
 
 
 /**
- * Initializes the complete client viewer from externally supplied Three.js dependencies. It owns startup order, fetches dataset metadata before constructing systems, and starts long-lived fire-and-forget loaders/rendering without returning an application object.
+ * Renders a fixed-position overlay reporting fatal initialization errors so the page never silently goes blank when bootstrap fails (e.g. missing tiles/meta.json). Idempotent: a second call replaces the prior message.
  */
-export async function initializeViewer({ THREE, MapControls }) {
-  const meta = await (await fetch('tiles/meta.json')).json();
+function showBootError(err) {
+  try {
+    const existing = document.getElementById('__viewer-boot-error');
+    if (existing) existing.remove();
+    const div = document.createElement('div');
+    div.id = '__viewer-boot-error';
+    div.style.cssText = 'position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,0.85);color:#fff;font:14px/1.4 system-ui,sans-serif;z-index:99999;padding:24px;text-align:center;';
+    const msg = (err && (err.message || String(err))) || 'unknown error';
+    div.innerHTML = `<div style="max-width:640px"><h2 style="margin:0 0 12px;font-size:18px;color:#f88">Viewer failed to start</h2><pre style="white-space:pre-wrap;text-align:left;background:#111;padding:12px;border-radius:4px;overflow:auto;max-height:50vh">${msg.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}</pre><p style="margin:12px 0 0;color:#aaa">Common cause: <code>tiles/meta.json</code> is missing. Build the tile set or check the server root.</p></div>`;
+    document.body.appendChild(div);
+  } catch { /* nothing more we can do */ }
+}
+
+/**
+ * Initializes the complete client viewer from externally supplied Three.js dependencies. It owns startup order, fetches dataset metadata before constructing systems, and starts long-lived fire-and-forget loaders/rendering without returning an application object. Any failure during bootstrap surfaces through showBootError so the page does not silently render blank.
+ */
+export async function initializeViewer(deps) {
+  try {
+    return await _initializeViewerImpl(deps);
+  } catch (err) {
+    console.error('[viewer] initialization failed', err);
+    showBootError(err);
+    throw err;
+  }
+}
+
+/**
+ * Internal bootstrap body. Extracted so the outer initializeViewer can wrap it in a single try/catch without indenting the entire module.
+ */
+async function _initializeViewerImpl({ THREE, MapControls }) {
+  const metaResp = await fetch('tiles/meta.json');
+  if (!metaResp.ok) {
+    throw new Error(`tiles/meta.json fetch failed: HTTP ${metaResp.status} ${metaResp.statusText}`);
+  }
+  const meta = await metaResp.json();
   const world = createWorldTransform(meta);
   const ROOT_X = world.rootX;
   const ROOT_Y = world.rootY;
