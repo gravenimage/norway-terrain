@@ -189,13 +189,24 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
         let totalInstances = 0;
         let totalCells = 0;
         let summaryFromGen = null;
+        // Main-thread instrumentation: distinct from worker generate time. Most
+        // bin work happens during postMessage tasks while the worker is still
+        // running, so this should be small and spread out. If `mainThreadMs`
+        // is large, mesh creation itself is the bottleneck; if `maxBatchMs`
+        // is large, bins are arriving in bursts that need draining.
+        let mainThreadMs = 0;
+        let maxBatchMs = 0;
+        let firstBinAtMs = null;
+        let lastBinAtMs = null;
 
         /**
-         * Consume a single bin's attribute arrays into a THREE InstancedMesh and
-         * register it for culling. Same shape for worker-sourced bins and the
-         * synchronous fallback path.
+         * Build the InstancedBufferGeometry + Mesh for one bin and register it
+         * for culling. Records its own runtime so we can see whether mesh
+         * creation is what's blocking the main thread.
          */
         function addBinMesh(bin) {
+          const tBin = NOW();
+          if (firstBinAtMs === null) firstBinAtMs = tBin;
           const aPos     = new THREE.InstancedBufferAttribute(bin.iPos, 3);
           const aSize    = new THREE.InstancedBufferAttribute(bin.iSize, 2);
           const aRot     = new THREE.InstancedBufferAttribute(bin.iRot, 1);
@@ -218,6 +229,10 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
           treeCells.push({ mesh, cx: bin.cellCx, cy: bin.cellCy, radius: bin.radius, maxH: bin.maxH, count: bin.seedCount });
           totalInstances += bin.instanceCount;
           totalCells += 1;
+          const dt = NOW() - tBin;
+          mainThreadMs += dt;
+          if (dt > maxBatchMs) maxBatchMs = dt;
+          lastBinAtMs = NOW();
         }
 
         // Try the worker path first. The worker imports forest-generate +
@@ -264,11 +279,15 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
           waitObstaclesMs: Number(phaseTimings.waitObstacles.toFixed(0)),
           generateMs: Number(phaseTimings.generate.toFixed(0)),
           workerUsed: workerOK,
+          mainThreadMs: Number(mainThreadMs.toFixed(0)),
+          maxBatchMs: Number(maxBatchMs.toFixed(1)),
+          firstBinMs: firstBinAtMs !== null ? Number((firstBinAtMs - tGenerateStart).toFixed(0)) : null,
+          lastBinMs: lastBinAtMs !== null ? Number((lastBinAtMs - tGenerateStart).toFixed(0)) : null,
           isBlockedCalls: summaryFromGen ? summaryFromGen.isBlockedCalls : 0,
           seedsSkippedByPrecheck: summaryFromGen ? summaryFromGen.seedsSkippedByPrecheck : 0,
         };
         console.info(
-          `[forest] loadTrees done: fetch=${summary.fetchMs}ms wait=${summary.waitObstaclesMs}ms generate=${summary.generateMs}ms (worker=${summary.workerUsed}, isBlocked calls=${summary.isBlockedCalls.toLocaleString()}, ${summary.seedsSkippedByPrecheck.toLocaleString()}/${summary.seeds.toLocaleString()} seeds skipped by pre-check) — ${summary.instances.toLocaleString()} instances in ${summary.cells} cells, ${summary.attrMB} MB attrs, ${summary.culled.toLocaleString()} culled`,
+          `[forest] loadTrees done: fetch=${summary.fetchMs}ms wait=${summary.waitObstaclesMs}ms generate=${summary.generateMs}ms mainThread=${summary.mainThreadMs}ms maxBatch=${summary.maxBatchMs}ms firstBin=${summary.firstBinMs}ms lastBin=${summary.lastBinMs}ms (worker=${summary.workerUsed}, isBlocked calls=${summary.isBlockedCalls.toLocaleString()}, ${summary.seedsSkippedByPrecheck.toLocaleString()}/${summary.seeds.toLocaleString()} seeds skipped by pre-check) — ${summary.instances.toLocaleString()} instances in ${summary.cells} cells, ${summary.attrMB} MB attrs, ${summary.culled.toLocaleString()} culled`,
           summary,
         );
         document.getElementById('hud').insertAdjacentHTML('beforeend',
