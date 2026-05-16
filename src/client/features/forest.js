@@ -1,101 +1,152 @@
-/** @file TRE1/TRE2 forest parser plus stateful tree/canopy scene system. */
-import { readMagic } from '../core/binary.js';
+/** @file TRE1/TRE2 forest stateful tree/canopy scene system. Parsing lives in features/forest-parse.js so the Web Worker can import the parser without dragging THREE-dependent code. */
+import { FOREST_CONTRACT, parseForestBuffer } from './forest-parse.js';
+export { FOREST_CONTRACT, parseForestBuffer };
 import { parseCanopyBuffer } from './canopy.js';
-import { createNullObstacles } from '../services/spatial-index.js';
+import { createNullObstacles } from '../services/placement-obstacles.js';
 import {
   CANOPY_RANGE_FADE_FLOOR_FRACTION,
   CANOPY_RANGE_INNER_DELTA_METRES,
 } from '../core/constants.js';
 import { computeFadeRange } from '../core/lod-fade.js';
+import { makeBudget, yieldToBrowser } from '../core/yield.js';
+import {
+  FWR_BIN, FWR_DONE, FWR_ERROR, FWR_PROGRESS, FWR_READY, FWS_GENERATE,
+} from './forest-protocol.js';
 
-export const FOREST_CONTRACT = Object.freeze({
-  magic: Object.freeze(['TRE1', 'TRE2']),
-  units: 'metres',
-  tre1RecordBytes: 20,
-  tre2RecordBytes: 24,
-  cellSizeMetres: 4000,
-  cornerDeltaUnitMetres: 0.5,
-});
-
-const TREE_PAL = [
-  [0.12, 0.22, 0.12], // 0 spruce
-  [0.13, 0.22, 0.12], // 1 pine
-  [0.13, 0.23, 0.12], // 2 upper pine/birch
-  [0.12, 0.21, 0.11], // 3 stunted pine
-];
-const TREE_PAL_DARK = [
-  [0.07, 0.15, 0.08],
-  [0.08, 0.15, 0.08],
-  [0.08, 0.16, 0.09],
-  [0.07, 0.14, 0.07],
-];
-const TREE_ASPECT = [0.30, 0.36, 0.55, 0.40];
+const NOW = (typeof performance !== 'undefined' && performance.now)
+  ? () => performance.now()
+  : () => Date.now();
 
 /**
- * Parse the TRE1/TRE2 forest seed binary without depending on THREE.
- * Layout is magic TRE1 or TRE2, uint32 record count, then 20-byte TRE1 records
- * or 24-byte TRE2 records with float32 cx/cy/bz/height, uint8 species/jitters,
- * and optional int8 corner deltas scaled by 0.5 m. Returns a plain object with
- * magic, recordBytes, typed-array columns, and 4000 m cell bins of seed indices.
+ * Spawn the forest worker, wait for its 'ready' handshake, transfer the forest
+ * buffer + obstacle snapshots, and stream per-bin results back to `onBin`.
+ *
+ * Return-value contract (intentional, see rubber-duck review):
+ *   true  → worker generated successfully. `onSummary(summary)` was called,
+ *           `onBin` was called once per bin; `forestBuffer` was transferred.
+ *   false → worker spawn or ready handshake failed BEFORE any transfer. The
+ *           caller still owns forestBuffer and should run the inline fallback.
+ *   throws → worker errored AFTER transfer. forestBuffer is detached;
+ *           recovery is impossible, so the caller's outer catch handles it.
+ *
+ * The 3 s ready timeout is generous: module worker import normally completes
+ * in tens of milliseconds, but the timeout protects against pathological cases
+ * (e.g. server hangs on the worker module fetch).
  */
-export function parseForestBuffer(buffer) {
-  const view = new DataView(buffer);
-  const magic = readMagic(view, 0, 4);
-  if (!FOREST_CONTRACT.magic.includes(magic)) throw new Error('bad magic ' + magic);
-  const hasCornerDeltas = magic === 'TRE2';
-  const n = view.getUint32(4, true);
-  const recordBytes = hasCornerDeltas ? FOREST_CONTRACT.tre2RecordBytes : FOREST_CONTRACT.tre1RecordBytes;
-  const records = {
-    cx: new Float32Array(n),
-    cy: new Float32Array(n),
-    bz: new Float32Array(n),
-    height: new Float32Array(n),
-    species: new Uint8Array(n),
-    sizeJitter: new Uint8Array(n),
-    colorJitter: new Uint8Array(n),
-    d00: new Float32Array(n),
-    d10: new Float32Array(n),
-    d01: new Float32Array(n),
-    d11: new Float32Array(n),
-  };
-  const bins = new Map();
-  const tmp = new DataView(buffer, 8);
-  for (let i = 0; i < n; i += 1) {
-    const o = i * recordBytes;
-    const cx = tmp.getFloat32(o + 0, true);
-    const cy = tmp.getFloat32(o + 4, true);
-    records.cx[i] = cx;
-    records.cy[i] = cy;
-    records.bz[i] = tmp.getFloat32(o + 8, true);
-    records.height[i] = tmp.getFloat32(o + 12, true);
-    records.species[i] = tmp.getUint8(o + 16);
-    records.sizeJitter[i] = tmp.getUint8(o + 17);
-    records.colorJitter[i] = tmp.getUint8(o + 18);
-    if (hasCornerDeltas) {
-      records.d00[i] = tmp.getInt8(o + 20) * FOREST_CONTRACT.cornerDeltaUnitMetres;
-      records.d10[i] = tmp.getInt8(o + 21) * FOREST_CONTRACT.cornerDeltaUnitMetres;
-      records.d01[i] = tmp.getInt8(o + 22) * FOREST_CONTRACT.cornerDeltaUnitMetres;
-      records.d11[i] = tmp.getInt8(o + 23) * FOREST_CONTRACT.cornerDeltaUnitMetres;
-    }
-    const gx = Math.floor(cx / FOREST_CONTRACT.cellSizeMetres);
-    const gy = Math.floor(cy / FOREST_CONTRACT.cellSizeMetres);
-    const k = gx * 100000 + gy;
-    let arr = bins.get(k);
-    if (!arr) { arr = []; bins.set(k, arr); }
-    arr.push(i);
+async function generateInWorker({ forestBuffer, obstacles, progress, onBin, onSummary }) {
+  if (typeof Worker === 'undefined') return false;
+  let worker;
+  try {
+    worker = new Worker(new URL('../workers/forest-worker.js', import.meta.url), { type: 'module' });
+  } catch (err) {
+    console.warn('[forest] worker spawn failed:', err);
+    return false;
   }
-  return { magic, hasCornerDeltas, n, recordBytes, records, bins };
+  // Ready handshake. Resolves true once 'ready' arrives, false on timeout.
+  const READY_TIMEOUT_MS = 3000;
+  const ready = await new Promise((resolve) => {
+    let resolved = false;
+    const timer = setTimeout(() => {
+      if (resolved) return;
+      resolved = true;
+      worker.removeEventListener('message', readyOnce);
+      worker.removeEventListener('error', errorBeforeReady);
+      console.warn('[forest] worker ready handshake timed out after', READY_TIMEOUT_MS, 'ms');
+      resolve(false);
+    }, READY_TIMEOUT_MS);
+    function readyOnce(e) {
+      if (e.data && e.data.type === FWR_READY && !resolved) {
+        resolved = true;
+        clearTimeout(timer);
+        worker.removeEventListener('message', readyOnce);
+        worker.removeEventListener('error', errorBeforeReady);
+        resolve(true);
+      }
+    }
+    function errorBeforeReady(err) {
+      if (resolved) return;
+      resolved = true;
+      clearTimeout(timer);
+      worker.removeEventListener('message', readyOnce);
+      worker.removeEventListener('error', errorBeforeReady);
+      console.warn('[forest] worker errored before ready:', err.message || err);
+      resolve(false);
+    }
+    worker.addEventListener('message', readyOnce);
+    worker.addEventListener('error', errorBeforeReady);
+  });
+  if (!ready) {
+    worker.terminate();
+    return false;
+  }
+  // Post-ready: serialize obstacles (cloned via .slice() so the main thread
+  // keeps its live copies), then transfer forestBuffer + obstacle buffers in
+  // one message. From this point forestBuffer is detached on the main thread
+  // and a worker failure is unrecoverable for this load attempt.
+  const snapshot = obstacles.serializeForWorker
+    ? obstacles.serializeForWorker()
+    : { roads: null, buildings: null };
+  const transfers = [forestBuffer];
+  if (obstacles.collectTransferables) {
+    for (const buf of obstacles.collectTransferables(snapshot)) transfers.push(buf);
+  }
+  return new Promise((resolve, reject) => {
+    worker.addEventListener('message', (event) => {
+      const msg = event.data;
+      if (!msg) return;
+      if (msg.type === FWR_BIN) {
+        onBin(msg);
+      } else if (msg.type === FWR_PROGRESS) {
+        progress.update('forest-trees', { current: msg.current, total: msg.total });
+      } else if (msg.type === FWR_DONE) {
+        onSummary(msg.summary);
+        worker.terminate();
+        resolve(true);
+      } else if (msg.type === FWR_ERROR) {
+        worker.terminate();
+        reject(new Error('forest worker error: ' + msg.message));
+      }
+    });
+    worker.addEventListener('error', (err) => {
+      worker.terminate();
+      reject(new Error('forest worker runtime error: ' + (err.message || err)));
+    });
+    try {
+      worker.postMessage({ type: FWS_GENERATE, forestBuffer, obstacles: snapshot }, transfers);
+    } catch (postErr) {
+      worker.terminate();
+      reject(postErr);
+    }
+  });
 }
 
 /**
- * Create the coupled forest/canopy renderer. THREE, groups, and uniforms are
- * shared references; treeCells/canopyCells and LOD state are owned here. Scene
- * is accepted for API symmetry. Uniforms are mutated in place, loadTrees() and
- * loadCanopy() are fire-and-forget, and updateForGeology couples forest
- * visibility to geology overlays.
+ * No-op progress tracker used when the system is constructed without one (e.g.
+ * tests). Keeps the loader code free of conditional checks.
  */
-export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, treeUniforms, canopyUniforms, elevationMax = 14835, obstacles = createNullObstacles() }) {
-  void scene;
+const NULL_PROGRESS = {
+  start() {}, update() {}, finish() {}, error() {},
+};
+
+/**
+ * Create the coupled forest/canopy renderer. THREE, groups, and uniforms are
+ * shared references; treeCells/canopyCells and LOD state are owned here.
+ * `treeUniforms` and `canopyUniforms` are MUTATED IN PLACE by updateForGeology
+ * and the LOD updaters — callers must not rely on referential immutability.
+ * loadTrees() and loadCanopy() are fire-and-forget; updateForGeology couples
+ * forest visibility to geology overlays.
+ *
+ * Required parameters (validated below): THREE, treesGroup, canopyGroup,
+ * treeUniforms, canopyUniforms. Missing any of these means the caller
+ * mis-wired the composition root; we throw a clear error instead of letting
+ * a deeper undefined-access trip first.
+ */
+export function createForestSystem({ THREE, treesGroup, canopyGroup, treeUniforms, canopyUniforms, elevationMax = 14835, obstacles = createNullObstacles(), progress = NULL_PROGRESS }) {
+  if (!THREE) throw new Error('createForestSystem: THREE is required');
+  if (!treesGroup) throw new Error('createForestSystem: treesGroup is required');
+  if (!canopyGroup) throw new Error('createForestSystem: canopyGroup is required');
+  if (!treeUniforms) throw new Error('createForestSystem: treeUniforms is required');
+  if (!canopyUniforms) throw new Error('createForestSystem: canopyUniforms is required');
   const treeCells = [];
   const canopyCells = [];
   const cellSphere = THREE.Sphere ? new THREE.Sphere() : null;
@@ -132,130 +183,55 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
      * bounds. Initial tree visibility is limited by canopyLodHi.
      */
     async loadTrees() {
+      const phaseTimings = { fetch: 0, waitObstacles: 0, generate: 0 };
+      const tFetchStart = NOW();
+      progress.start('forest-trees', 'Forest');
+      progress.update('forest-trees', { phase: 'fetching forest.bin' });
       try {
         const [{ makeTreeGeometry }, materials, ab] = await Promise.all([
           import('./geometry-builders.js'),
           import('../rendering/material-factory.js'),
           (await fetch('forest.bin')).arrayBuffer(),
         ]);
+        phaseTimings.fetch = NOW() - tFetchStart;
+        progress.update('forest-trees', { phase: 'waiting for road/building footprints' });
+        const tWaitStart = NOW();
         // Wait for road and building footprints to be ready (or marked empty) so the per-instance
-        // cull below sees a complete obstacle map. Tree generation runs once and is non-trivial,
-        // so the small extra latency is preferable to leaking trees onto roads / through roofs.
+        // cull in the worker (or inline fallback) sees a complete obstacle map. Tree generation
+        // runs once at startup and is non-trivial, so the small extra latency is preferable to
+        // leaking trees onto roads / through roofs.
         await Promise.all([obstacles.roadsReady, obstacles.buildingsReady]);
-        const { n, records, bins } = parseForestBuffer(ab);
+        phaseTimings.waitObstacles = NOW() - tWaitStart;
+
         const treeGeom = makeTreeGeometry();
         const treeMaterial = materials.createTreeMaterial(treeUniforms);
         const K_TREES = 16;
-        const QUAD_M = 48.0;
-        const BASE_SINK = 1.2;
-        /**
-         * Deterministic jitter hash for repeatable per-seed placement, rotation,
-         * scale, and color variation without storing extra forest attributes.
-         */
-        const jh = (a, b) => {
-          let x = (a * 374761393 ^ b * 668265263) | 0;
-          x = (x ^ (x >>> 13)) * 1274126177 | 0;
-          x = x ^ (x >>> 16);
-          return ((x >>> 0) / 0xffffffff) * 2.0 - 1.0;
-        };
-        let totalCells = 0;
         let totalInstances = 0;
-        let totalCulled = 0;
-        for (const [, idxArr] of bins){
-          const m = idxArr.length;
-          if (!m) continue;
-          const M = m * K_TREES;
-          const iPos       = new Float32Array(M * 3);
-          const iSize      = new Float32Array(M * 2);
-          const iRot       = new Float32Array(M);
-          const iCanopyA   = new Float32Array(M * 3);
-          const iCanopyB   = new Float32Array(M * 3);
-          let bxMin = Infinity, byMin = Infinity, bxMax = -Infinity, byMax = -Infinity;
-          let maxH = 0;
-          let wi = 0;
-          for (let k = 0; k < m; k++){
-            const seedIdx = idxArr[k];
-            const cx0 = records.cx[seedIdx];
-            const cy0 = records.cy[seedIdx];
-            const bz0 = records.bz[seedIdx];
-            const h0  = records.height[seedIdx];
-            const sp  = records.species[seedIdx];
-            const sj  = records.sizeJitter[seedIdx];
-            const cj  = records.colorJitter[seedIdx];
-            const d00 = records.d00[seedIdx];
-            const d10 = records.d10[seedIdx];
-            const d01 = records.d01[seedIdx];
-            const d11 = records.d11[seedIdx];
-            const aspect = TREE_ASPECT[sp] || 0.4;
-            const A = TREE_PAL[sp] || TREE_PAL[0];
-            const B = TREE_PAL_DARK[sp] || TREE_PAL_DARK[0];
-            for (let s = 0; s < K_TREES; s++){
-              const sub = K_TREES;
-              const nx = Math.ceil(Math.sqrt(sub));
-              const sx = s % nx, sy = (s / nx) | 0;
-              const baseU = (sx + 0.5) / nx - 0.5;
-              const baseV = (sy + 0.5) / nx - 0.5;
-              const ru = jh(seedIdx, s * 2 + 1) * (0.5 / nx) * 0.95;
-              const rv = jh(seedIdx, s * 2 + 2) * (0.5 / nx) * 0.95;
-              let u = baseU + ru;
-              let v = baseV + rv;
-              const theta = jh(seedIdx, 9991) * Math.PI;
-              const ct = Math.cos(theta), st = Math.sin(theta);
-              const u2 =  ct * u - st * v;
-              const v2 =  st * u + ct * v;
-              const offU = jh(seedIdx, 9992) * 0.45;
-              const offV = jh(seedIdx, 9993) * 0.45;
-              const cx = cx0 + (u2 + offU) * QUAD_M;
-              const cy = cy0 + (v2 + offV) * QUAD_M;
-              // Cull trees whose base intersects a road or building footprint. Doing this on the
-              // CPU at tree-spawn time avoids the visible "chopped tree" artefact that happens
-              // when the fragment shader discards only the parts of a tree over the road.
-              if (obstacles.isBlocked(cx, cy)) { totalCulled++; continue; }
-              const fu = Math.max(0, Math.min(1, (u2 + offU) + 0.5));
-              const fv = Math.max(0, Math.min(1, (v2 + offV) + 0.5));
-              const dz = (d00 * (1 - fu) * (1 - fv))
-                       + (d10 *      fu  * (1 - fv))
-                       + (d01 * (1 - fu) *      fv )
-                       + (d11 *      fu  *      fv );
-              const rh1 = jh(seedIdx, 100 + s);
-              const rh3 = jh(seedIdx, 300 + s);
-              const sjF = sj / 255.0 + rh1 * 0.20;
-              const rJit = 0.80 + Math.max(0, Math.min(1, sjF)) * 0.35;
-              const hJit = 0.85 + Math.max(0, Math.min(1, sjF)) * 0.25;
-              const radius = Math.max(0.6, h0 * aspect * rJit);
-              const height = Math.max(2.0, h0 * hJit);
-              iPos[wi*3+0] = cx;
-              iPos[wi*3+1] = cy;
-              iPos[wi*3+2] = bz0 + dz - BASE_SINK;
-              iSize[wi*2+0] = radius;
-              iSize[wi*2+1] = height;
-              iRot[wi] = (cj / 255.0 + rh3 * 0.5) * Math.PI * 2.0;
-              const jLum = jh(seedIdx, 401 + s) * 0.05;
-              const jR   = jh(seedIdx, 411 + s) * 0.025;
-              const jG   = jh(seedIdx, 421 + s) * 0.035;
-              const jB   = jh(seedIdx, 431 + s) * 0.025;
-              iCanopyA[wi*3+0] = Math.max(0.04, Math.min(0.5, A[0] + jLum + jR));
-              iCanopyA[wi*3+1] = Math.max(0.04, Math.min(0.5, A[1] + jLum + jG));
-              iCanopyA[wi*3+2] = Math.max(0.04, Math.min(0.5, A[2] + jLum + jB));
-              iCanopyB[wi*3+0] = Math.max(0.03, Math.min(0.4, B[0] + jLum + jR));
-              iCanopyB[wi*3+1] = Math.max(0.03, Math.min(0.4, B[1] + jLum + jG));
-              iCanopyB[wi*3+2] = Math.max(0.03, Math.min(0.4, B[2] + jLum + jB));
-              if (cx < bxMin) bxMin = cx; if (cy < byMin) byMin = cy;
-              if (cx > bxMax) bxMax = cx; if (cy > byMax) byMax = cy;
-              if (height > maxH) maxH = height;
-              wi++;
-            }
-          }
-          if (wi === 0) continue;
-          const cellCx = (bxMin + bxMax) / 2, cellCy = (byMin + byMax) / 2;
-          const radius = Math.hypot(bxMax - cellCx, byMax - cellCy) + 30;
+        let totalCells = 0;
+        let summaryFromGen = null;
+        // Main-thread instrumentation: distinct from worker generate time. Most
+        // bin work happens during postMessage tasks while the worker is still
+        // running, so this should be small and spread out. If `mainThreadMs`
+        // is large, mesh creation itself is the bottleneck; if `maxBatchMs`
+        // is large, bins are arriving in bursts that need draining.
+        let mainThreadMs = 0;
+        let maxBatchMs = 0;
+        let firstBinAtMs = null;
+        let lastBinAtMs = null;
 
-          const aPos      = new THREE.InstancedBufferAttribute(iPos, 3);
-          const aSize     = new THREE.InstancedBufferAttribute(iSize, 2);
-          const aRot      = new THREE.InstancedBufferAttribute(iRot, 1);
-          const aCanopyA  = new THREE.InstancedBufferAttribute(iCanopyA, 3);
-          const aCanopyB  = new THREE.InstancedBufferAttribute(iCanopyB, 3);
-
+        /**
+         * Build the InstancedBufferGeometry + Mesh for one bin and register it
+         * for culling. Records its own runtime so we can see whether mesh
+         * creation is what's blocking the main thread.
+         */
+        function addBinMesh(bin) {
+          const tBin = NOW();
+          if (firstBinAtMs === null) firstBinAtMs = tBin;
+          const aPos     = new THREE.InstancedBufferAttribute(bin.iPos, 3);
+          const aSize    = new THREE.InstancedBufferAttribute(bin.iSize, 2);
+          const aRot     = new THREE.InstancedBufferAttribute(bin.iRot, 1);
+          const aCanopyA = new THREE.InstancedBufferAttribute(bin.iCanopyA, 3);
+          const aCanopyB = new THREE.InstancedBufferAttribute(bin.iCanopyB, 3);
           const ig = new THREE.InstancedBufferGeometry();
           ig.setAttribute('position', treeGeom.getAttribute('position'));
           ig.setAttribute('normal',   treeGeom.getAttribute('normal'));
@@ -265,19 +241,87 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
           ig.setAttribute('iRot',     aRot);
           ig.setAttribute('iCanopyA', aCanopyA);
           ig.setAttribute('iCanopyB', aCanopyB);
-          ig.instanceCount = wi;
+          ig.instanceCount = bin.instanceCount;
           const mesh = new THREE.Mesh(ig, treeMaterial);
           mesh.frustumCulled = false;
           mesh.renderOrder = 1;
           treesGroup.add(mesh);
-          totalInstances += wi;
-          treeCells.push({ mesh, cx: cellCx, cy: cellCy, radius, maxH, count: m });
-          totalCells++;
+          treeCells.push({ mesh, cx: bin.cellCx, cy: bin.cellCy, radius: bin.radius, maxH: bin.maxH, count: bin.seedCount });
+          totalInstances += bin.instanceCount;
+          totalCells += 1;
+          const dt = NOW() - tBin;
+          mainThreadMs += dt;
+          if (dt > maxBatchMs) maxBatchMs = dt;
+          lastBinAtMs = NOW();
         }
-        document.getElementById('hud').insertAdjacentHTML('beforeend',
-          `<br>trees: ${totalInstances.toLocaleString()} (×${K_TREES} from ${n.toLocaleString()} seeds, ${totalCulled.toLocaleString()} culled on roads/buildings) in ${totalCells} cells, < ${(canopyLodHi/1000).toFixed(1)} km`);
+
+        // Try the worker path first. The worker imports forest-generate +
+        // forest-parse + obstacles-query (no THREE) and sends a 'ready' message
+        // on module load — the main thread waits for that handshake before
+        // transferring the 94 MB forest buffer so an import failure leaves the
+        // main thread free to fall back without losing the buffer.
+        const tGenerateStart = NOW();
+        const workerOK = await generateInWorker({
+          forestBuffer: ab,
+          obstacles,
+          progress,
+          onBin: addBinMesh,
+          onSummary: (s) => { summaryFromGen = s; },
+        });
+        if (!workerOK) {
+          // Inline synchronous fallback: blocks the main thread for ~25 s but at
+          // least the trees appear. Reserved for worker spawn failure or ready
+          // timeout, which should be rare on modern browsers. Surface a phase
+          // label so the user knows why the page is unresponsive.
+          progress.update('forest-trees', { phase: 'worker unavailable, using main thread (slow)' });
+          const { generateForestBins } = await import('./forest-generate.js');
+          const snapshot = obstacles.serializeForWorker
+            ? obstacles.serializeForWorker()
+            : { roads: null, buildings: null };
+          summaryFromGen = generateForestBins({
+            forestBuffer: ab,
+            obstacleState: snapshot,
+            onBin: addBinMesh,
+            onProgress: (current, total) => progress.update('forest-trees', { current, total }),
+          });
+        }
+        phaseTimings.generate = NOW() - tGenerateStart;
+
+        const K = (summaryFromGen && summaryFromGen.K_TREES) || K_TREES;
+        const n = summaryFromGen ? summaryFromGen.seeds : 0;
+        const totalCulled = summaryFromGen ? summaryFromGen.culled : 0;
+        const attrMB = (totalInstances * 48) / (1024 * 1024);
+        const summary = {
+          seeds: n,
+          instances: totalInstances,
+          culled: totalCulled,
+          cells: totalCells,
+          attrMB: Number(attrMB.toFixed(1)),
+          fetchMs: Number(phaseTimings.fetch.toFixed(0)),
+          waitObstaclesMs: Number(phaseTimings.waitObstacles.toFixed(0)),
+          generateMs: Number(phaseTimings.generate.toFixed(0)),
+          workerUsed: workerOK,
+          mainThreadMs: Number(mainThreadMs.toFixed(0)),
+          maxBatchMs: Number(maxBatchMs.toFixed(1)),
+          firstBinMs: firstBinAtMs !== null ? Number((firstBinAtMs - tGenerateStart).toFixed(0)) : null,
+          lastBinMs: lastBinAtMs !== null ? Number((lastBinAtMs - tGenerateStart).toFixed(0)) : null,
+          isBlockedCalls: summaryFromGen ? summaryFromGen.isBlockedCalls : 0,
+          seedsSkippedByPrecheck: summaryFromGen ? summaryFromGen.seedsSkippedByPrecheck : 0,
+        };
+        console.info(
+          `[forest] loadTrees done: fetch=${summary.fetchMs}ms wait=${summary.waitObstaclesMs}ms generate=${summary.generateMs}ms mainThread=${summary.mainThreadMs}ms maxBatch=${summary.maxBatchMs}ms firstBin=${summary.firstBinMs}ms lastBin=${summary.lastBinMs}ms (worker=${summary.workerUsed}, isBlocked calls=${summary.isBlockedCalls.toLocaleString()}, ${summary.seedsSkippedByPrecheck.toLocaleString()}/${summary.seeds.toLocaleString()} seeds skipped by pre-check) — ${summary.instances.toLocaleString()} instances in ${summary.cells} cells, ${summary.attrMB} MB attrs, ${summary.culled.toLocaleString()} culled`,
+          summary,
+        );
+        const hudEl = (typeof document !== 'undefined') ? document.getElementById('hud') : null;
+        if (hudEl) {
+          hudEl.insertAdjacentHTML('beforeend',
+            `<br>trees: ${totalInstances.toLocaleString()} (×${K} from ${n.toLocaleString()} seeds, ${totalCulled.toLocaleString()} culled on roads/buildings) in ${totalCells} cells, < ${(canopyLodHi/1000).toFixed(1)} km`);
+        }
+        progress.finish('forest-trees');
+        return;
       } catch (e) {
         console.warn('forest.bin not loaded:', e);
+        progress.error('forest-trees', e && e.message ? e.message : String(e));
       }
     },
     /**
@@ -286,14 +330,26 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
      * cell bounds for LOD/range culling.
      */
     async loadCanopy() {
+      progress.start('forest-canopy', 'Canopy');
+      progress.update('forest-canopy', { phase: 'fetching canopy.bin' });
+      const tFetchStart = NOW();
       try {
         const [materials, ab] = await Promise.all([
           import('../rendering/material-factory.js'),
           (await fetch('canopy.bin')).arrayBuffer(),
         ]);
+        const fetchMs = NOW() - tFetchStart;
+        progress.update('forest-canopy', { phase: 'parsing' });
+        const tParseStart = NOW();
         const canopyMaterial = materials.createCanopyMaterial(canopyUniforms);
         const parsed = parseCanopyBuffer(ab);
-        for (const { kx, ky, cx, cy, czMin, czMax, radius, verts, indices } of parsed.cells){
+        const parseMs = NOW() - tParseStart;
+        const tBuildStart = NOW();
+        const cells = parsed.cells;
+        progress.update('forest-canopy', { phase: 'building cells', total: cells.length });
+        const budget = makeBudget(8);
+        for (let i = 0; i < cells.length; i += 1) {
+          const { kx, ky, cx, cy, czMin, czMax, radius, verts, indices } = cells[i];
           const geom = new THREE.BufferGeometry();
           geom.setAttribute('position', new THREE.BufferAttribute(verts, 3));
           geom.setIndex(new THREE.BufferAttribute(indices, 1));
@@ -302,11 +358,25 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
           mesh.renderOrder = 1;
           canopyGroup.add(mesh);
           canopyCells.push({ mesh, cx, cy, czMin, czMax, radius, kx, ky });
+          if (budget.exceeded() && i + 1 < cells.length) {
+            progress.update('forest-canopy', { current: i + 1 });
+            await yieldToBrowser();
+            budget.reset();
+          }
         }
-        document.getElementById('hud').insertAdjacentHTML('beforeend',
-          `<br>canopy: ${parsed.nCells} cells, ${parsed.totalTris.toLocaleString()} tris`);
+        const buildMs = NOW() - tBuildStart;
+        console.info(
+          `[forest] loadCanopy done: fetch=${Number(fetchMs.toFixed(0))}ms parse=${Number(parseMs.toFixed(0))}ms build=${Number(buildMs.toFixed(0))}ms — ${parsed.nCells} cells, ${parsed.totalTris.toLocaleString()} tris`,
+        );
+        const canopyHudEl = (typeof document !== 'undefined') ? document.getElementById('hud') : null;
+        if (canopyHudEl) {
+          canopyHudEl.insertAdjacentHTML('beforeend',
+            `<br>canopy: ${parsed.nCells} cells, ${parsed.totalTris.toLocaleString()} tris`);
+        }
+        progress.finish('forest-canopy');
       } catch (e) {
         console.warn('canopy.bin not loaded:', e);
+        progress.error('forest-canopy', e && e.message ? e.message : String(e));
       }
     },
     /**

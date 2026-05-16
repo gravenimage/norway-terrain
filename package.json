@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test:client": "node --test tests-js/client-contracts.test.mjs tests-js/roadtrip.test.mjs tests-js/labels.test.mjs tests-js/tile-cache.test.mjs tests-js/app-state.test.mjs tests-js/binary-loader.test.mjs tests-js/lod-fade.test.mjs",
+    "test:client": "node --test tests-js/client-contracts.test.mjs tests-js/roadtrip.test.mjs tests-js/labels.test.mjs tests-js/tile-cache.test.mjs tests-js/app-state.test.mjs tests-js/binary-loader.test.mjs tests-js/lod-fade.test.mjs tests-js/yield.test.mjs tests-js/progress.test.mjs tests-js/placement-obstacles.test.mjs tests-js/forest-generate.test.mjs",
     "test:viewer": "node --test tests-js/viewer-smoke.test.mjs",
     "test:viewer:visual": "playwright test tests-js/viewer-visual.test.mjs",
     "test:python": "uv run --with pytest --with numpy --with rasterio --with pyproj --with requests --with shapely --with mapbox-earcut pytest -q",
