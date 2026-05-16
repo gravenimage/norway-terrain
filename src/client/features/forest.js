@@ -2,13 +2,16 @@
 import { FOREST_CONTRACT, parseForestBuffer } from './forest-parse.js';
 export { FOREST_CONTRACT, parseForestBuffer };
 import { parseCanopyBuffer } from './canopy.js';
-import { createNullObstacles } from '../services/spatial-index.js';
+import { createNullObstacles } from '../services/placement-obstacles.js';
 import {
   CANOPY_RANGE_FADE_FLOOR_FRACTION,
   CANOPY_RANGE_INNER_DELTA_METRES,
 } from '../core/constants.js';
 import { computeFadeRange } from '../core/lod-fade.js';
 import { makeBudget, yieldToBrowser } from '../core/yield.js';
+import {
+  FWR_BIN, FWR_DONE, FWR_ERROR, FWR_PROGRESS, FWR_READY, FWS_GENERATE,
+} from './forest-protocol.js';
 
 const NOW = (typeof performance !== 'undefined' && performance.now)
   ? () => performance.now()
@@ -46,24 +49,31 @@ async function generateInWorker({ forestBuffer, obstacles, progress, onBin, onSu
     const timer = setTimeout(() => {
       if (resolved) return;
       resolved = true;
+      worker.removeEventListener('message', readyOnce);
+      worker.removeEventListener('error', errorBeforeReady);
       console.warn('[forest] worker ready handshake timed out after', READY_TIMEOUT_MS, 'ms');
       resolve(false);
     }, READY_TIMEOUT_MS);
-    worker.addEventListener('message', function readyOnce(e) {
-      if (e.data && e.data.type === 'ready' && !resolved) {
+    function readyOnce(e) {
+      if (e.data && e.data.type === FWR_READY && !resolved) {
         resolved = true;
         clearTimeout(timer);
         worker.removeEventListener('message', readyOnce);
+        worker.removeEventListener('error', errorBeforeReady);
         resolve(true);
       }
-    });
-    worker.addEventListener('error', (err) => {
+    }
+    function errorBeforeReady(err) {
       if (resolved) return;
       resolved = true;
       clearTimeout(timer);
+      worker.removeEventListener('message', readyOnce);
+      worker.removeEventListener('error', errorBeforeReady);
       console.warn('[forest] worker errored before ready:', err.message || err);
       resolve(false);
-    });
+    }
+    worker.addEventListener('message', readyOnce);
+    worker.addEventListener('error', errorBeforeReady);
   });
   if (!ready) {
     worker.terminate();
@@ -84,15 +94,15 @@ async function generateInWorker({ forestBuffer, obstacles, progress, onBin, onSu
     worker.addEventListener('message', (event) => {
       const msg = event.data;
       if (!msg) return;
-      if (msg.type === 'bin') {
+      if (msg.type === FWR_BIN) {
         onBin(msg);
-      } else if (msg.type === 'progress') {
+      } else if (msg.type === FWR_PROGRESS) {
         progress.update('forest-trees', { current: msg.current, total: msg.total });
-      } else if (msg.type === 'done') {
+      } else if (msg.type === FWR_DONE) {
         onSummary(msg.summary);
         worker.terminate();
         resolve(true);
-      } else if (msg.type === 'error') {
+      } else if (msg.type === FWR_ERROR) {
         worker.terminate();
         reject(new Error('forest worker error: ' + msg.message));
       }
@@ -102,7 +112,7 @@ async function generateInWorker({ forestBuffer, obstacles, progress, onBin, onSu
       reject(new Error('forest worker runtime error: ' + (err.message || err)));
     });
     try {
-      worker.postMessage({ type: 'generate', forestBuffer, obstacles: snapshot }, transfers);
+      worker.postMessage({ type: FWS_GENERATE, forestBuffer, obstacles: snapshot }, transfers);
     } catch (postErr) {
       worker.terminate();
       reject(postErr);
@@ -120,13 +130,23 @@ const NULL_PROGRESS = {
 
 /**
  * Create the coupled forest/canopy renderer. THREE, groups, and uniforms are
- * shared references; treeCells/canopyCells and LOD state are owned here. Scene
- * is accepted for API symmetry. Uniforms are mutated in place, loadTrees() and
- * loadCanopy() are fire-and-forget, and updateForGeology couples forest
- * visibility to geology overlays.
+ * shared references; treeCells/canopyCells and LOD state are owned here.
+ * `treeUniforms` and `canopyUniforms` are MUTATED IN PLACE by updateForGeology
+ * and the LOD updaters — callers must not rely on referential immutability.
+ * loadTrees() and loadCanopy() are fire-and-forget; updateForGeology couples
+ * forest visibility to geology overlays.
+ *
+ * Required parameters (validated below): THREE, treesGroup, canopyGroup,
+ * treeUniforms, canopyUniforms. Missing any of these means the caller
+ * mis-wired the composition root; we throw a clear error instead of letting
+ * a deeper undefined-access trip first.
  */
-export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, treeUniforms, canopyUniforms, elevationMax = 14835, obstacles = createNullObstacles(), progress = NULL_PROGRESS }) {
-  void scene;
+export function createForestSystem({ THREE, treesGroup, canopyGroup, treeUniforms, canopyUniforms, elevationMax = 14835, obstacles = createNullObstacles(), progress = NULL_PROGRESS }) {
+  if (!THREE) throw new Error('createForestSystem: THREE is required');
+  if (!treesGroup) throw new Error('createForestSystem: treesGroup is required');
+  if (!canopyGroup) throw new Error('createForestSystem: canopyGroup is required');
+  if (!treeUniforms) throw new Error('createForestSystem: treeUniforms is required');
+  if (!canopyUniforms) throw new Error('createForestSystem: canopyUniforms is required');
   const treeCells = [];
   const canopyCells = [];
   const cellSphere = THREE.Sphere ? new THREE.Sphere() : null;
@@ -251,7 +271,9 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
         if (!workerOK) {
           // Inline synchronous fallback: blocks the main thread for ~25 s but at
           // least the trees appear. Reserved for worker spawn failure or ready
-          // timeout, which should be rare on modern browsers.
+          // timeout, which should be rare on modern browsers. Surface a phase
+          // label so the user knows why the page is unresponsive.
+          progress.update('forest-trees', { phase: 'worker unavailable, using main thread (slow)' });
           const { generateForestBins } = await import('./forest-generate.js');
           const snapshot = obstacles.serializeForWorker
             ? obstacles.serializeForWorker()
@@ -290,8 +312,11 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
           `[forest] loadTrees done: fetch=${summary.fetchMs}ms wait=${summary.waitObstaclesMs}ms generate=${summary.generateMs}ms mainThread=${summary.mainThreadMs}ms maxBatch=${summary.maxBatchMs}ms firstBin=${summary.firstBinMs}ms lastBin=${summary.lastBinMs}ms (worker=${summary.workerUsed}, isBlocked calls=${summary.isBlockedCalls.toLocaleString()}, ${summary.seedsSkippedByPrecheck.toLocaleString()}/${summary.seeds.toLocaleString()} seeds skipped by pre-check) — ${summary.instances.toLocaleString()} instances in ${summary.cells} cells, ${summary.attrMB} MB attrs, ${summary.culled.toLocaleString()} culled`,
           summary,
         );
-        document.getElementById('hud').insertAdjacentHTML('beforeend',
-          `<br>trees: ${totalInstances.toLocaleString()} (×${K} from ${n.toLocaleString()} seeds, ${totalCulled.toLocaleString()} culled on roads/buildings) in ${totalCells} cells, < ${(canopyLodHi/1000).toFixed(1)} km`);
+        const hudEl = (typeof document !== 'undefined') ? document.getElementById('hud') : null;
+        if (hudEl) {
+          hudEl.insertAdjacentHTML('beforeend',
+            `<br>trees: ${totalInstances.toLocaleString()} (×${K} from ${n.toLocaleString()} seeds, ${totalCulled.toLocaleString()} culled on roads/buildings) in ${totalCells} cells, < ${(canopyLodHi/1000).toFixed(1)} km`);
+        }
         progress.finish('forest-trees');
         return;
       } catch (e) {
@@ -343,8 +368,11 @@ export function createForestSystem({ THREE, scene, treesGroup, canopyGroup, tree
         console.info(
           `[forest] loadCanopy done: fetch=${Number(fetchMs.toFixed(0))}ms parse=${Number(parseMs.toFixed(0))}ms build=${Number(buildMs.toFixed(0))}ms — ${parsed.nCells} cells, ${parsed.totalTris.toLocaleString()} tris`,
         );
-        document.getElementById('hud').insertAdjacentHTML('beforeend',
-          `<br>canopy: ${parsed.nCells} cells, ${parsed.totalTris.toLocaleString()} tris`);
+        const canopyHudEl = (typeof document !== 'undefined') ? document.getElementById('hud') : null;
+        if (canopyHudEl) {
+          canopyHudEl.insertAdjacentHTML('beforeend',
+            `<br>canopy: ${parsed.nCells} cells, ${parsed.totalTris.toLocaleString()} tris`);
+        }
         progress.finish('forest-canopy');
       } catch (e) {
         console.warn('canopy.bin not loaded:', e);

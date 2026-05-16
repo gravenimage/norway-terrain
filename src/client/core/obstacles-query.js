@@ -26,9 +26,9 @@
 const ROAD_HALF_W = [6.5, 5.0, 4.0, 3.25, 2.75];
 
 /**
- * Squared distance from point (px, py) to segment (ax, ay)-(bx, by). Mirrors
- * the helper in services/spatial-index.js but is duplicated here so the worker
- * has no cross-module dependency on the main-thread service.
+ * Squared distance from point (px, py) to segment (ax, ay)-(bx, by). The hot
+ * obstacle-query math lives here exclusively after the worker refactor; the
+ * main-thread placement-obstacles service delegates to this module.
  */
 function distSqPointSeg(px, py, ax, ay, bx, by) {
   const dx = bx - ax;

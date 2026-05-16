@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createPlacementObstacles, createNullObstacles } from '../src/client/services/spatial-index.js';
+import { createPlacementObstacles, createNullObstacles } from '../src/client/services/placement-obstacles.js';
 
 /**
  * Builds a minimal road grid with a single segment classified as the widest

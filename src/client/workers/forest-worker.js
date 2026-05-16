@@ -4,18 +4,15 @@
  * during boot. Imports the pure parse/generate/obstacle modules; never
  * touches THREE.
  *
- * Protocol (see features/forest.js for the main-thread counterpart):
- *   worker → main  {type:'ready'}                    (sent once on script load)
- *   main → worker  {type:'generate', forestBuffer, obstacles}
- *   worker → main  {type:'progress', current, total} (periodic)
- *   worker → main  {type:'bin', cellCx, cellCy, radius, maxH, instanceCount,
- *                   seedCount, iPos, iSize, iRot, iCanopyA, iCanopyB}
- *                  (per bin; all five Float32Arrays sent as transferables)
- *   worker → main  {type:'done', summary}            (final, with aggregate stats)
- *   worker → main  {type:'error', message}           (on parse/generate failure)
+ * Protocol message types and the bin payload shape live in
+ * features/forest-protocol.js so the main thread and worker can't drift on
+ * magic strings.
  */
 
 import { generateForestBins } from '../features/forest-generate.js';
+import {
+  FWR_BIN, FWR_DONE, FWR_ERROR, FWR_PROGRESS, FWR_READY, FWS_GENERATE,
+} from '../features/forest-protocol.js';
 
 function postBin(payload) {
   const transfer = [
@@ -25,12 +22,12 @@ function postBin(payload) {
     payload.iCanopyA.buffer,
     payload.iCanopyB.buffer,
   ];
-  self.postMessage({ type: 'bin', ...payload }, transfer);
+  self.postMessage({ type: FWR_BIN, ...payload }, transfer);
 }
 
 self.addEventListener('message', (event) => {
   const msg = event.data;
-  if (!msg || msg.type !== 'generate') return;
+  if (!msg || msg.type !== FWS_GENERATE) return;
   try {
     const PROGRESS_EVERY_MS = 250;
     let lastProgressMs = 0;
@@ -42,13 +39,16 @@ self.addEventListener('message', (event) => {
         const now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
         if (now - lastProgressMs >= PROGRESS_EVERY_MS || current === total) {
           lastProgressMs = now;
-          self.postMessage({ type: 'progress', current, total });
+          // Progress is best-effort: if the channel has closed (e.g. main
+          // thread terminated us mid-flight) swallow the throw so we don't
+          // turn a cleanup race into an FWR_ERROR.
+          try { self.postMessage({ type: FWR_PROGRESS, current, total }); } catch (_) { /* channel closed */ }
         }
       },
     });
-    self.postMessage({ type: 'done', summary });
+    self.postMessage({ type: FWR_DONE, summary });
   } catch (err) {
-    self.postMessage({ type: 'error', message: (err && err.message) || String(err) });
+    self.postMessage({ type: FWR_ERROR, message: (err && err.message) || String(err) });
   }
 });
 
@@ -56,4 +56,5 @@ self.addEventListener('message', (event) => {
 // modules and is ready to receive a generate message. The main thread waits
 // for this before transferring the 94 MB forest buffer so a worker-import
 // failure doesn't leave it without a path to load trees.
-self.postMessage({ type: 'ready' });
+self.postMessage({ type: FWR_READY });
+

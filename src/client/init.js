@@ -47,7 +47,7 @@ import { createRoadSystem } from './overlays/roads.js';
 import { attachControls } from './ui/controls.js';
 import { validateDomIds } from './ui/dom-ids.js';
 import { createProgressTracker } from './ui/progress.js';
-import { createPlacementObstacles } from './services/spatial-index.js';
+import { createPlacementObstacles } from './services/placement-obstacles.js';
 import { createRoadTripSystem } from './features/roadtrip.js';
 import { attachRoadTripPanel } from './ui/roadtrip-panel.js';
 import { createLabelSystem } from './features/labels.js';
@@ -278,7 +278,6 @@ async function _initializeViewerImpl({ THREE, MapControls }) {
   };
   const forestSystem = createForestSystem({
     THREE,
-    scene,
     treesGroup,
     canopyGroup,
     treeUniforms,
