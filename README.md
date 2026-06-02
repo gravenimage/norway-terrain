@@ -5,7 +5,16 @@ south-western Norway, built on a 10-metre digital elevation model from
 Kartverket plus OpenStreetMap roads/buildings/boundaries and ESA WorldCover
 forest+water layers.
 
-![Rogaland 10 m DTM preview](rogaland_10m_preview.png)
+<table>
+  <tr>
+    <td><img src="docs/screenshots/overview.png" alt="Wide overview of the Rogaland terrain" width="400"></td>
+    <td><img src="docs/screenshots/terrainClose.png" alt="Close-up of terrain detail and lakes" width="400"></td>
+  </tr>
+  <tr>
+    <td><img src="docs/screenshots/geology.png" alt="Geology overlay across the landscape" width="400"></td>
+    <td><img src="docs/screenshots/forest.png" alt="Forest cover over the hills" width="400"></td>
+  </tr>
+</table>
 
 ## Quick start
 
