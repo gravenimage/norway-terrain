@@ -8,11 +8,11 @@ forest+water layers.
 <table>
   <tr>
     <td><img src="docs/screenshots/overview.png" alt="Wide overview of the Rogaland terrain" width="400"></td>
-    <td><img src="docs/screenshots/terrainClose.png" alt="Close-up of terrain detail and lakes" width="400"></td>
+    <td><img src="docs/screenshots/valley.png" alt="Close-up of a wooded valley with a lake" width="400"></td>
   </tr>
   <tr>
-    <td><img src="docs/screenshots/geology.png" alt="Geology overlay across the landscape" width="400"></td>
-    <td><img src="docs/screenshots/forest.png" alt="Forest cover over the hills" width="400"></td>
+    <td><img src="docs/screenshots/village.png" alt="A small village on a fjord, mountains behind" width="400"></td>
+    <td><img src="docs/screenshots/stavanger.png" alt="The city of Stavanger on the coast" width="400"></td>
   </tr>
 </table>
 
